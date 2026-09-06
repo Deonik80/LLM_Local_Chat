@@ -1,9 +1,8 @@
 Программу делал для себя с помощью AI. Я не программист. 
 
-# 🤖 LM Studio Chat Advanced
+# 🤖 LM Studio Chat
 
-Асинхронный кроссплатформенный чат-клиент на **Python + Flet** для взаимодействия с локальными LLM-моделями через API **LM Studio**. Программа обладает расширенным UI, поддерживает работу с контекстом, локальное чтение документов, обработку изображений (Vision), голосовые функции и профили параметров.
-
+Чат-клиент на **Python + Flet** для взаимодействия с локальными LLM-моделями через API **LM Studio**.
 ---
 
 ## ✨ Ключевые особенности
@@ -31,6 +30,8 @@
 ---
 
 ## 🚀 Быстрый старт
+
+Через bat файл run_app.bat (запускает сервер LM Studio и запускает чат)
 
 ### Требования
 
@@ -71,7 +72,7 @@ pip install edge-tts SpeechRecognition PyAudio
 ```bash
 python.exe app.py
 ```
-Либо через bat файл run_app.bat (запускает сервер LM Studio и запускает чат)
+Либо через bat файл run_app.bat
 ---
 
 ## 📂 Структура данных приложения
@@ -98,6 +99,8 @@ python.exe app.py
 ## 📄 Лицензия
 
 Проект распространяется под лицензией **MIT**. Подробнее см. в файле [LICENSE](LICENSE).
+
+---
 
 <img width="856" height="1346" alt="1" src="https://github.com/user-attachments/assets/c4e9709a-90f6-4e8c-8faa-bea86ac12dc4" />
 <img width="856" height="1346" alt="2" src="https://github.com/user-attachments/assets/1d8d9431-9021-47e1-ad56-33a8c3bc41bb" />
