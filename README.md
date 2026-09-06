@@ -3,6 +3,8 @@
 Запуск одной командой в терминале:  python.exe app.py
 
 Либо через bat файл run_app.bat (запускает сервер LM Studio и запускает чат)
+
+
 Ключевые возможности:
 Мультимодальность и работа с файлами: Поддерживает отправку изображений и автоматически извлекает текст из документов форматов .pdf, .docx, .xlsx, .csv, .txt, .py, .md для контекста модели. Если модель не поддерживает Vision (ошибка 400), интерфейс предложит отправить запрос повторно без картинок.
 Гибкое управление контекстом: Позволяет настраивать параметры генерации (temperature, top_p, max_tokens, seed, context length). Доступна функция сжатия истории (саммари диалога) для экономии токенов и предотвращения переполнения контекста.
@@ -18,3 +20,6 @@
 
 Команда для быстрой установкиВы можете установить все необходимые зависимости одной командой в терминале:
 bashpip install flet httpx pypdf python-docx openpyxl edge-tts SpeechRecognition PyAudio
+<img width="856" height="1346" alt="3" src="https://github.com/user-attachments/assets/32692c82-bebc-4802-a1db-ef47b87a669a" />
+<img width="856" height="1346" alt="2" src="https://github.com/user-attachments/assets/1d8d9431-9021-47e1-ad56-33a8c3bc41bb" />
+<img width="856" height="1346" alt="1" src="https://github.com/user-attachments/assets/c4e9709a-90f6-4e8c-8faa-bea86ac12dc4" />
