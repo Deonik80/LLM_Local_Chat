@@ -42,8 +42,8 @@
 Склонируйте репозиторий и установите базовые пакеты, а также модули для обработки документов и голоса:
 
 ```bash
-git clone https://github.com
-cd lm-studio-chat-advanced
+git clone https://github.com/Deonik80/LLM_Local_Chat.git
+cd LLM_Local_Chat
 
 # Базовые зависимости
 pip install flet httpx
