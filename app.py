@@ -1,3 +1,18 @@
+# Copyright (C) 2026 Deonik80 (https://github.com/Deonik80)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://gnu.org>.
+
 # LM Studio Chat — улучшенная версия
 from __future__ import annotations
 import asyncio, base64, csv, html as html_mod, io, json, mimetypes, os, time, uuid
@@ -7,11 +22,11 @@ from typing import Callable, Optional
 import flet as ft  # Version: 0.86.5
 import httpx
 
-# В начале файла, перед функциями:
+# 
 try:
     from pypdf import PdfReader
 except ImportError:
-    PdfReader = None # Используем None вместо импорта, чтобы код не сломался
+    PdfReader = None 
 
 def extract_text(p: str) -> str:
     """..."""
