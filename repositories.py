@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from models import ChatMessage
+from models import ChatMessage, rehydrate_attachment
 
 
 class ChatRepository:
@@ -48,14 +48,25 @@ class ChatRepository:
 
     def load_chat(self, cid) -> list[ChatMessage]:
         try:
-            return [ChatMessage.from_dict(m)
+            msgs = [ChatMessage.from_dict(m)
                     for m in json.loads(self.chat_path(cid).read_text("utf-8"))]
         except Exception: return []
+        # вернуть картинки из файлов (в JSON лежит только путь)
+        for m in msgs:
+            try:
+                m.attachments = [rehydrate_attachment(a) for a in (m.attachments or [])]
+            except Exception: pass
+        return msgs
 
     def save_chat(self, cid, msgs: list):
-        self.chat_path(cid).write_text(json.dumps(
-            [m.to_dict() if isinstance(m, ChatMessage) else m for m in msgs],
-            ensure_ascii=False, indent=2), "utf-8")
+        # b64 на диск не пишем — только путь/имя (файл истории остаётся маленьким)
+        out = []
+        for m in msgs:
+            if isinstance(m, ChatMessage):
+                try: out.append(m.to_dict(include_b64=False))
+                except TypeError: out.append(m.to_dict())
+            else: out.append(m)
+        self.chat_path(cid).write_text(json.dumps(out, ensure_ascii=False, indent=2), "utf-8")
 
     def delete_chat(self, cid):
         try: self.chat_path(cid).unlink(missing_ok=True)

@@ -499,7 +499,10 @@ except ImportError:
                 parts = [{"type": "text", "text": m.text}]
                 for a in m.attachments:
                     if isinstance(a, Attachment) and a.mime and a.mime.startswith("image/"):
-                        parts.append({"type": "image_url", "image_url": {"url": f"data:{a.mime};base64,{a.b64}"}})
+                        if a.b64:
+                            parts.append({"type": "image_url", "image_url": {"url": f"data:{a.mime};base64,{a.b64}"}})
+                        else:
+                            parts.append({"type": "text", "text": f"[image unavailable (file not found): {Path(a.path).name}]"})
                     elif isinstance(a, Attachment):
                         parts.append({"type": "text", "text": f"--- {Path(a.path).name} ---\n{extract_text(a.path)}"})
                 api.append({"role": "user", "content": parts})
@@ -733,7 +736,7 @@ async def main(page: ft.Page):
                     border_radius=S["bubble_radius"])))
         col = ft.Column(spacing=2, controls=[md])
         for a in m.attachments:
-            if isinstance(a, Attachment) and a.mime and a.mime.startswith("image/"):
+            if isinstance(a, Attachment) and a.mime and a.mime.startswith("image/") and a.b64:
                 col.controls.insert(0, ft.Image(src=f"data:{a.mime};base64,{a.b64}", width=200, height=150, fit=ft.BoxFit.CONTAIN))
             elif isinstance(a, Attachment):
                 col.controls.insert(0, ft.Text(f"📎 {Path(a.path).name}", size=12, color=T["utc"] if m.is_user else T["atc"]))
@@ -1086,8 +1089,11 @@ async def main(page: ft.Page):
         elif fmt == "html":
             body = "".join(f"<p><b>{tr('you') if m.is_user else tr('ai')}:</b> {html_mod.escape(m.text)}</p>" for m in ms)
             (DATA / f"chat_{state['cid']}.html").write_text(f"<html><body>{body}</body></html>", "utf-8")
-        elif fmt == "feedback":  # выгрузка оценок в JSONL для fine-tuning
-            rows = [m.to_dict() for m in ms if not m.is_user and (m.rating or m.feedback_type)]
+        elif fmt == "feedback":  # выгрузка оценок в JSONL для fine-tuning (без b64)
+            def _nodump(m):
+                try: return m.to_dict(include_b64=False)
+                except TypeError: return m.to_dict()
+            rows = [_nodump(m) for m in ms if not m.is_user and (m.rating or m.feedback_type)]
             if not rows: show_e(tr("e_no_msgs")); return
             p = DATA / f"feedback_{state['cid']}.jsonl"
             p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), "utf-8")

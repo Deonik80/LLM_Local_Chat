@@ -18,15 +18,24 @@
 Strict validation for new data, tolerant loading of legacy JSON:
 unknown/invalid ``rating`` / ``feedback_type`` values are coerced
 to ``None`` instead of raising, so old chat files always load.
+
+Images: base64 lives only in memory. On disk (chat JSON) we store
+path/mime only — ``to_dict(include_b64=False)``; on load,
+``rehydrate_attachment()`` re-encodes from disk when the file is
+still available. This keeps history files small.
 """
 from __future__ import annotations
+import base64
+import mimetypes
 import time
+from pathlib import Path
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
 FeedbackType = Literal["helpful", "inaccurate", "harmful", "other"]
 _FEEDBACK_OK = ("helpful", "inaccurate", "harmful", "other")
+MAX_IMG_BYTES = 10 * 1024 * 1024
 
 
 class Attachment(BaseModel):
@@ -34,12 +43,34 @@ class Attachment(BaseModel):
     mime: Optional[str] = None
     b64: Optional[str] = None
 
-    def to_dict(self) -> dict:
-        return self.model_dump()
+    def to_dict(self, include_b64: bool = True) -> dict:
+        d = self.model_dump()
+        if not include_b64:
+            d.pop("b64", None)
+        return d
 
     @staticmethod
     def from_dict(d: dict) -> "Attachment":
         return Attachment(path=d.get("path", ""), mime=d.get("mime"), b64=d.get("b64"))
+
+
+def rehydrate_attachment(a: "Attachment", max_bytes: int = MAX_IMG_BYTES) -> "Attachment":
+    """Re-encode image bytes from disk when chat JSON has path but no b64."""
+    if not isinstance(a, Attachment) or a.b64:
+        return a
+    if not (a.mime or "").startswith("image/"):
+        return a
+    try:
+        p = Path(a.path or "")
+        if not p.is_file() or p.stat().st_size > max_bytes:
+            return a
+        mime, _ = mimetypes.guess_type(p.name)
+        if not mime or not mime.startswith("image/"):
+            return a
+        return Attachment(path=a.path, mime=mime,
+                          b64=base64.b64encode(p.read_bytes()).decode())
+    except (OSError, ValueError):
+        return a
 
 
 class ChatMessage(BaseModel):
@@ -58,13 +89,17 @@ class ChatMessage(BaseModel):
     def _ts_default(cls, v):
         return v if isinstance(v, (int, float)) and v else time.time()
 
-    def to_dict(self) -> dict:
+    def to_dict(self, include_b64: bool = True) -> dict:
         d = self.model_dump()
-        d["attachments"] = [
-            a.to_dict() if isinstance(a, Attachment)
-            else (a.model_dump() if isinstance(a, BaseModel) else a)
-            for a in self.attachments
-        ]
+        atts = []
+        for a in self.attachments:
+            if isinstance(a, Attachment):
+                atts.append(a.to_dict(include_b64=include_b64))
+            elif isinstance(a, BaseModel):
+                atts.append(a.model_dump())
+            else:
+                atts.append(a)
+        d["attachments"] = atts
         return d
 
     @staticmethod

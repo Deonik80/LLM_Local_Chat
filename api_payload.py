@@ -81,9 +81,12 @@ class APIPayloadBuilder:
                         if strip_images:
                             parts.append({"type": "text", "text":
                                 f"[image omitted (model has no vision support): {Path(a.path).name}]"})
-                        else:
+                        elif a.b64:
                             parts.append({"type": "image_url",
                                           "image_url": {"url": f"data:{a.mime};base64,{a.b64}"}})
+                        else:
+                            parts.append({"type": "text", "text":
+                                f"[image unavailable (file not found): {Path(a.path).name}]"})
                     elif isinstance(a, Attachment):
                         parts.append({"type": "text",
                                       "text": f"--- {Path(a.path).name} ---\n{self.extract_text(a.path)}"})
