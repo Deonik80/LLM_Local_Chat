@@ -90,6 +90,32 @@ LANGS = {
     "not_image": "Не картинка: {n}", "file_too_big": "Файл > {m} MB",
     "cant_read": "Не удалось прочитать {n}: {e}",
     "pdf_empty": "[PDF без текстового слоя]", "clipped": "\n\n[...обрезано, всего {n} символов...]",
+    "lang": "Язык", "fb_helpful": "Полезно", "fb_bad": "Неточно", "fb_harm": "Опасно",
+    "tts_speak": "Озвучить", "stt_mic": "Голосовой ввод",
+    "e_no_tts": "Нет TTS: pip install edge-tts",
+    "e_no_stt": "Нет SpeechRecognition: pip install SpeechRecognition PyAudio",
+    "copy_code": "Копировать код",
+    "model_loading": "Загрузка модели {m}…", "model_loaded": "Модель загружена: {m}",
+    "e_load_model": "Не удалось загрузить {m}: {e}",
+    "e_no_model_on_server": "Модели {m} нет на сервере",
+    "dlg_novision_t": "Модель без поддержки изображений",
+    "dlg_novision_c": "Сервер ответил 400 — вероятно, модель не принимает картинки. Повторить запрос без изображений (в историю вставится пометка)?",
+    "retry_noimg": "Повторить без картинок",
+    "vision_off": "🚫 vision выкл — отправлено без изображений",
+    "vision_auto": "🚫 авто: модель без vision — отправлено без изображений",
+    "vision_send": "Vision: отправлять изображения",
+    "dlg_ctxfull_t": "Контекст переполнен",    "dlg_ctxfull_c": "~{cur} / {cl} токенов. Сжать историю (summarize), продолжить как есть или отменить?",
+    "ctx_still_over": "всё ещё переполнено",
+    "continue_btn": "Продолжить",
+    "m_find": "Найти в чате", "m_rated": "Только оценённые ★", "m_exp_fb": "Экспорт фидбека JSONL",
+    "sec_profiles": "Профили связок", "profile": "Профиль",
+    "profile_name": "Имя профиля", "profile_name_hint": "Код-ревью Qwen",
+    "to_profile": "В профиль", "del_profile": "Удалить профиль",
+    "profile_applied": "Профиль «{n}» применён", "profile_saved": "Профиль «{n}» сохранён",
+    "profile_deleted": "Профиль «{n}» удалён",
+    "sec_env": "Окружение", "env_none": "Окружение не загружено",
+    "env_req": "requirements: {n} симв.", "env_vars_n": ".env: {n} vars",
+    "req_loaded": "requirements загружен: {n}", "env_loaded": ".env загружен: {n} vars",
 },
 "en": {
     "title": "LM Studio Chat", "send": "Send", "stop": "Stop",
@@ -143,6 +169,33 @@ LANGS = {
     "not_image": "Not an image: {n}", "file_too_big": "File > {m} MB",
     "cant_read": "Could not read {n}: {e}",
     "pdf_empty": "[PDF has no text layer]", "clipped": "\n\n[...clipped, {n} chars total...]",
+    "lang": "Language", "fb_helpful": "Helpful", "fb_bad": "Inaccurate", "fb_harm": "Harmful",
+    "tts_speak": "Speak aloud", "stt_mic": "Voice input",
+    "e_no_tts": "No TTS engine: pip install edge-tts",
+    "e_no_stt": "No SpeechRecognition: pip install SpeechRecognition PyAudio",
+    "copy_code": "Copy code",
+    "model_loading": "Loading model {m}…", "model_loaded": "Model loaded: {m}",
+    "e_load_model": "Failed to load {m}: {e}",
+    "e_no_model_on_server": "Model {m} not found on server",
+    "dlg_novision_t": "Model without image support",
+    "dlg_novision_c": "Server replied 400 — the model likely rejects images. Retry without images (a note will be inserted)?",
+    "retry_noimg": "Retry without images",
+    "vision_off": "🚫 vision off — sent without images",
+    "vision_auto": "🚫 auto: no-vision model — sent without images",
+    "vision_send": "Vision: send images",
+    "dlg_ctxfull_t": "Context full",
+    "dlg_ctxfull_c": "~{cur} / {cl} tokens. Summarize history, continue as-is, or cancel?",
+    "ctx_still_over": "still over the limit",
+    "continue_btn": "Continue",
+    "m_find": "Find in chat", "m_rated": "Rated only ★", "m_exp_fb": "Export feedback JSONL",
+    "sec_profiles": "Combo profiles", "profile": "Profile",
+    "profile_name": "Profile name", "profile_name_hint": "Code-review Qwen",
+    "to_profile": "Save profile", "del_profile": "Delete profile",
+    "profile_applied": "Profile “{n}” applied", "profile_saved": "Profile “{n}” saved",
+    "profile_deleted": "Profile “{n}” deleted",
+    "sec_env": "Environment", "env_none": "No environment loaded",
+    "env_req": "requirements: {n} chars", "env_vars_n": ".env: {n} vars",
+    "req_loaded": "requirements loaded: {n}", "env_loaded": ".env loaded: {n} vars",
 },
 }
 CUR = {"lang": "ru"}
@@ -222,6 +275,7 @@ DEFAULT_SETTINGS = {"system_prompt": "", "temperature": 0.7, "top_p": 1.0,
     "context_length": int(os.getenv("CONTEXT_LENGTH", "8192")), "send_images": True,
     "model": os.getenv("DEFAULT_MODEL", ""), "no_vision_models": [],
     "window_width": 1100, "window_height": 860, "window_left": None, "window_top": None,
+    "window_maximized": False,
     "lang": "ru",
     "theme": "dark", "font_scale": 1.0, "preset": "Обычный"}
 BUILTIN_PRESETS = {
@@ -483,12 +537,15 @@ async def main(page: ft.Page):
     UI = {}  # ссылки на контролы для apply_lang()
     page.title = tr("title"); page.bgcolor = th["bg"]
     try:  # восстановить геометрию окна с прошлого запуска
-        page.window.width = max(600, int(settings.get("window_width", 1100) or 1100))
-        page.window.height = max(500, int(settings.get("window_height", 860) or 860))
-        if settings.get("window_left") is not None:
-            page.window.left = int(settings["window_left"])
-        if settings.get("window_top") is not None:
-            page.window.top = int(settings["window_top"])
+        if settings.get("window_maximized"):
+            page.window.maximized = True
+        else:
+            page.window.width = max(600, int(settings.get("window_width", 1100) or 1100))
+            page.window.height = max(500, int(settings.get("window_height", 860) or 860))
+            if settings.get("window_left") is not None:
+                page.window.left = int(settings["window_left"])
+            if settings.get("window_top") is not None:
+                page.window.top = int(settings["window_top"])
     except Exception as ex:
         _log.warning("restore window geometry failed: %s", ex)
     client = LmClient()
@@ -532,7 +589,7 @@ async def main(page: ft.Page):
     seed = ft.TextField(label="seed (-1=off)", value=str(settings.get("seed", -1)), width=120)
     ctxlen = ft.TextField(label="Context Length tokens", value=str(settings.get("context_length", 8192)), width=170,
                           hint_text="e.g. 8192")
-    send_images_cb = ft.Checkbox(label="Vision: отправлять изображения / send images",
+    send_images_cb = ft.Checkbox(label=tr("vision_send"),
                                  value=bool(settings.get("send_images", True)))
     attach_row = ft.Row(spacing=8, wrap=True)
     clip = ft.Clipboard(); page.services.extend([ft.FilePicker(), clip])
@@ -659,11 +716,21 @@ async def main(page: ft.Page):
         tstr = time.strftime("%H:%M", time.localtime(m.ts or time.time()))
         md = ft.Markdown(m.text or "…", selectable=True, extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
             code_theme=ft.MarkdownCodeTheme.ATOM_ONE_DARK,
+            code_style_sheet=ft.MarkdownStyleSheet(  # стили именно код-блоков (md_style_sheet их не касается)
+                code_text_style=ft.TextStyle(color=T["atc"], size=int(13 * fs2)),
+                codeblock_padding=8,
+                codeblock_decoration=ft.BoxDecoration(
+                    bgcolor=T["panel"], border=ft.Border.all(1, T["border"]),
+                    border_radius=S["bubble_radius"])),
             md_style_sheet=ft.MarkdownStyleSheet(
                 p_text_style=ft.TextStyle(color=T["utc"] if m.is_user else T["atc"], size=int(14 * fs2)),
                 a_text_style=ft.TextStyle(color=T["utc"] if m.is_user else T["accent"],
                                           bgcolor="transparent",
-                                          size=int(14 * fs2))))
+                                          size=int(14 * fs2)),
+                blockquote_padding=8,
+                blockquote_decoration=ft.BoxDecoration(  # дефолт blue.shade100 нечитаем
+                    bgcolor=T["panel"], border=ft.Border.all(1, T["border"]),
+                    border_radius=S["bubble_radius"])))
         col = ft.Column(spacing=2, controls=[md])
         for a in m.attachments:
             if isinstance(a, Attachment) and a.mime and a.mime.startswith("image/"):
@@ -697,7 +764,7 @@ async def main(page: ft.Page):
             try:
                 from voice import speak, is_playing, stop_playback  # type: ignore
             except ImportError:
-                show_e("Нет TTS: pip install edge-tts"); return
+                show_e(tr("e_no_tts")); return
             if is_playing():  # повторный клик — стоп
                 stop_playback(); status.value = ""; page.update(); return
             status.value = "🔊…"; page.update()
@@ -707,7 +774,7 @@ async def main(page: ft.Page):
                 status.value = ""; page.update()
             except Exception as ex: show_e(str(ex))
         acts.controls.append(ft.IconButton(ft.Icons.VOLUME_UP_OUTLINED, icon_size=15,
-                                           tooltip="Озвучить", on_click=speak_msg))
+                                           tooltip=tr("tts_speak"), on_click=speak_msg))
         if m.is_user:
             async def edit(e):
                 inp.value = m.text; page.update()  # #4: правка через поле ввода
@@ -725,7 +792,7 @@ async def main(page: ft.Page):
                     code = "\n\n".join(p.split("\n", 1)[1] if "\n" in p else p for p in parts[1::2])
                     await clip.set(code or m.text); status.value = tr("copied"); page.update()
                 acts.controls.append(ft.IconButton(ft.Icons.CODE_OUTLINED, icon_size=15,
-                                                   tooltip="Copy code", on_click=copy_code))
+                                                   tooltip=tr("copy_code"), on_click=copy_code))
             fb_label = ft.Text("", size=11, color=T["muted"])
             def refresh_fb():
                 if _format_feedback is not None:
@@ -750,11 +817,11 @@ async def main(page: ft.Page):
                     page.update()
                 return _h
             acts.controls += [
-                ft.IconButton(ft.Icons.THUMB_UP_OUTLINED, icon_size=15, tooltip="Полезно / Helpful",
+                ft.IconButton(ft.Icons.THUMB_UP_OUTLINED, icon_size=15, tooltip=tr("fb_helpful"),
                               on_click=set_fb(rating=5, ftype="helpful")),
-                ft.IconButton(ft.Icons.THUMB_DOWN_OUTLINED, icon_size=15, tooltip="Неточно / Inaccurate",
+                ft.IconButton(ft.Icons.THUMB_DOWN_OUTLINED, icon_size=15, tooltip=tr("fb_bad"),
                               on_click=set_fb(rating=2, ftype="inaccurate")),
-                ft.IconButton(ft.Icons.FLAG_OUTLINED, icon_size=15, tooltip="Опасно / Harmful",
+                ft.IconButton(ft.Icons.FLAG_OUTLINED, icon_size=15, tooltip=tr("fb_harm"),
                               on_click=set_fb(rating=1, ftype="harmful")),
                 fb_label,
             ]
@@ -821,7 +888,7 @@ async def main(page: ft.Page):
         sel = model_dd.value or DEFAULT_MODEL
         if sel == state.get("loaded_model"): return
         prev = state.get("loaded_model")
-        status.value = f"Загрузка модели {sel}…"; page.update()
+        status.value = tr("model_loading", m=sel); page.update()
         if prev and prev != sel:
             try:
                 await client.unload_model(prev)  # сначала выгрузить текущую…
@@ -833,13 +900,13 @@ async def main(page: ft.Page):
             await client.load_model(sel)  # …только потом грузить новую
         except Exception as ex:
             _log.error("load_model(%s) failed: %s", sel, ex)
-            show_e(f"Не удалось загрузить {sel}: {ex}")
+            show_e(tr("e_load_model", m=sel, e=ex))
             return
         state["loaded_model"] = sel
         try:
             if store is not None: store._emit("model:loaded")
         except Exception: pass
-        status.value = f"Модель загружена: {sel}"; page.update()
+        status.value = tr("model_loaded", m=sel); page.update()
 
     async def on_model_change(e=None):
         state["model_touched"] = True
@@ -874,10 +941,9 @@ async def main(page: ft.Page):
             if not fut.done(): fut.set_result(v)
             page.update()
         page.show_dialog(ft.AlertDialog(
-            title=ft.Text("Модель без поддержки изображений"),
-            content=ft.Text("Сервер ответил 400 — вероятно, модель не принимает картинки. "
-                            "Повторить запрос без изображений (в историю вставится пометка)?"),
-            actions=[ft.TextButton("Повторить без картинок", on_click=lambda e: close(True)),
+            title=ft.Text(tr("dlg_novision_t")),
+            content=ft.Text(tr("dlg_novision_c")),
+            actions=[ft.TextButton(tr("retry_noimg"), on_click=lambda e: close(True)),
                      ft.TextButton(tr("cancel"), on_click=lambda e: close(False))],
             actions_alignment=ft.MainAxisAlignment.END))
         return await fut
@@ -907,9 +973,9 @@ async def main(page: ft.Page):
         _log.info("request model=%s msgs=%s images=%s stripped=%s",
                   model_dd.value or DEFAULT_MODEL, st["messages"], st["images"], _strip_images)
         if _strip_images and st["images"]:
-            status.value = ("🚫 vision выкл — отправлено без изображений"
+            status.value = (tr("vision_off")
                             if not settings.get("send_images", True)
-                            else "🚫 авто: модель без vision — отправлено без изображений")
+                            else tr("vision_auto"))
             status.update()
         am = ChatMessage(text="", is_user=False); state["msgs"].append(am)
         md = add_bubble(am); page.update()
@@ -959,7 +1025,7 @@ async def main(page: ft.Page):
             if go == "compress":
                 await summarize()
                 cur = sum(estimate_tokens(m.text or "") for m in state["msgs"]) + estimate_tokens(txt)
-                if cur > cl: show_e(f"~{cur} / {cl} {tr('tokens')} — всё ещё переполнено"); return
+                if cur > cl: show_e(f"~{cur} / {cl} {tr('tokens')} — {tr('ctx_still_over')}"); return
         state["sending"] = True; set_sending_ui(True); page.update()
         try:
             um = ChatMessage(text=txt, is_user=True)
@@ -1037,17 +1103,17 @@ async def main(page: ft.Page):
             if not fut.done(): fut.set_result(v)
             page.update()
         dlg = ft.AlertDialog(
-            title=ft.Text("Контекст переполнен / Context full"),
-            content=ft.Text(f"~{cur} / {cl} {tr('tokens')}. Сжать историю (summarize), продолжить как есть или отменить?"),
+            title=ft.Text(tr("dlg_ctxfull_t")),
+            content=ft.Text(tr("dlg_ctxfull_c", cur=cur, cl=cl)),
             actions=[ft.TextButton(tr("summarize"), on_click=lambda e: close("compress")),
-                     ft.TextButton("Продолжить / Continue", on_click=lambda e: close("continue")),
+                     ft.TextButton(tr("continue_btn"), on_click=lambda e: close("continue")),
                      ft.TextButton(tr("cancel"), on_click=lambda e: close("cancel"))],
             actions_alignment=ft.MainAxisAlignment.END)
         page.show_dialog(dlg)
         return await fut
 
     def find_in_chat(e=None):  # полнотекстовый поиск по текущему чату
-        q_f = ft.TextField(label="Найти в чате / Find", autofocus=True,
+        q_f = ft.TextField(label=tr("m_find"), autofocus=True,
                            value=state.get("chat_filter", ""))
         def close(e=None):
             try: page.pop_dialog()
@@ -1061,7 +1127,7 @@ async def main(page: ft.Page):
                 status.value = f"🔍 {n}"; page.update()
         def clear(e=None):
             state["chat_filter"] = ""; close(); render_all()
-        page.show_dialog(ft.AlertDialog(title=ft.Text("Найти в чате / Find"),
+        page.show_dialog(ft.AlertDialog(title=ft.Text(tr("m_find")),
             content=q_f, actions=[ft.TextButton(tr("clear"), on_click=clear),
             ft.TextButton(tr("cancel"), on_click=close), ft.TextButton(tr("save"), on_click=apply)],
             actions_alignment=ft.MainAxisAlignment.END))
@@ -1196,8 +1262,8 @@ async def main(page: ft.Page):
             return {}
         def _save_profiles(p: dict):
             PROFILES_F.write_text(json.dumps(p, ensure_ascii=False, indent=2), "utf-8")
-    profile_dd = ft.Dropdown(label="Профиль / Profile", width=220)
-    profile_name = ft.TextField(label="Имя профиля", hint_text="Код-ревью Qwen", width=200, dense=True)
+    profile_dd = ft.Dropdown(label=tr("profile"), width=220)
+    profile_name = ft.TextField(label=tr("profile_name"), hint_text=tr("profile_name_hint"), width=200, dense=True)
     def refresh_profiles(sel=None):
         try:
             profs = _load_profiles()
@@ -1233,13 +1299,13 @@ async def main(page: ft.Page):
         persist(); page.update()
         if p.get("model") and p["model"] != model_dd.value:
             if p["model"] not in [o.key for o in model_dd.options]:
-                show_e(f"Модели {p['model']} нет на сервере"); return
+                show_e(tr("e_no_model_on_server", m=p['model'])); return
             model_dd.value = p["model"]
             try: model_dd.update()
             except Exception: pass
             state["model_touched"] = True; persist()
             await ensure_model_loaded()
-        status.value = f"Профиль «{name}» применён"; page.update()
+        status.value = tr("profile_applied", n=name); page.update()
     def save_profile(e):
         hide_e()
         name = (profile_name.value or "").strip()
@@ -1253,7 +1319,7 @@ async def main(page: ft.Page):
         try: _save_profiles(profs)
         except Exception as ex: show_e(str(ex)); return
         profile_name.value = ""; refresh_profiles(sel=name)
-        status.value = f"Профиль «{name}» сохранён"; page.update()
+        status.value = tr("profile_saved", n=name); page.update()
     def delete_profile(e):
         name = profile_dd.value
         profs = _load_profiles()
@@ -1261,16 +1327,16 @@ async def main(page: ft.Page):
         del profs[name]
         try: _save_profiles(profs)
         except Exception as ex: show_e(str(ex)); return
-        refresh_profiles(); status.value = f"Профиль «{name}» удалён"; page.update()
+        refresh_profiles(); status.value = tr("profile_deleted", n=name); page.update()
     # --- Environment Context: requirements.txt / .env ---
     env_label = ft.Text("", size=12, color=th["muted"])
     def refresh_env_label():
         req = (settings.get("env_requirements") or "")
         nvars = len(settings.get("env_vars") or {})
         bits = []
-        if req: bits.append(f"requirements: {len(req)} симв.")
-        if nvars: bits.append(f".env: {nvars} vars")
-        env_label.value = " · ".join(bits) if bits else ("Окружение не загружено" if CUR["lang"] == "ru" else "No environment loaded")
+        if req: bits.append(tr("env_req", n=len(req)))
+        if nvars: bits.append(tr("env_vars_n", n=nvars))
+        env_label.value = " · ".join(bits) if bits else tr("env_none")
     refresh_env_label()
     def _parse_dotenv(text: str) -> dict:
         out = {}
@@ -1293,7 +1359,7 @@ async def main(page: ft.Page):
         except Exception as ex: show_e(tr("e_read_file", e=ex)); return
         settings["env_requirements"] = txt; settings["env_req_name"] = Path(p).name
         save_settings(settings); refresh_env_label(); env_label.update()
-        status.value = f"requirements загружен: {Path(p).name}"; page.update()
+        status.value = tr("req_loaded", n=Path(p).name); page.update()
     async def load_dotenv(e=None):
         hide_e()
         try:
@@ -1305,7 +1371,7 @@ async def main(page: ft.Page):
         except Exception as ex: show_e(tr("e_read_file", e=ex)); return
         settings["env_vars"] = _parse_dotenv(txt)
         save_settings(settings); refresh_env_label(); env_label.update()
-        status.value = f".env загружен: {len(settings['env_vars'])} vars"; page.update()
+        status.value = tr("env_loaded", n=len(settings['env_vars'])); page.update()
     def clear_env(e=None):
         settings["env_requirements"] = ""; settings["env_vars"] = {}
         save_settings(settings); refresh_env_label(); env_label.update(); page.update()
@@ -1336,9 +1402,11 @@ async def main(page: ft.Page):
         for c in cs:
             try: c.update()
             except Exception: pass
-    def toggle_lang(e=None):
+    def set_lang(e=None):
+        lang = getattr(getattr(e, "control", None), "value", None) or lang_btn.value or "ru"
+        if lang not in LANGS: return
         old = CUR["lang"]
-        CUR["lang"] = "en" if old == "ru" else "ru"
+        CUR["lang"] = lang
         if _i18n is not None:
             try: _i18n.set_lang(CUR["lang"])
             except ValueError: pass
@@ -1352,12 +1420,12 @@ async def main(page: ft.Page):
     def make_overflow():
         return [
             ft.PopupMenuItem(tr("m_compress"), icon=ft.Icons.COMPRESS_OUTLINED, on_click=summarize),
-            ft.PopupMenuItem("Найти в чате / Find", icon=ft.Icons.SEARCH_OUTLINED, on_click=find_in_chat),
-            ft.PopupMenuItem("Только оценённые ★", icon=ft.Icons.STAR_OUTLINE, on_click=toggle_rated_only),
+            ft.PopupMenuItem(tr("m_find"), icon=ft.Icons.SEARCH_OUTLINED, on_click=find_in_chat),
+            ft.PopupMenuItem(tr("m_rated"), icon=ft.Icons.STAR_OUTLINE, on_click=toggle_rated_only),
             ft.PopupMenuItem(tr("m_exp_md"), icon=ft.Icons.SHARE_OUTLINED, on_click=lambda e: export("md")),
             ft.PopupMenuItem(tr("m_exp_html"), icon=ft.Icons.SHARE_OUTLINED, on_click=lambda e: export("html")),
             ft.PopupMenuItem(tr("m_exp_json"), icon=ft.Icons.SHARE_OUTLINED, on_click=lambda e: export("json")),
-            ft.PopupMenuItem("Экспорт фидбека JSONL", icon=ft.Icons.FEEDBACK_OUTLINED, on_click=lambda e: export("feedback")),
+            ft.PopupMenuItem(tr("m_exp_fb"), icon=ft.Icons.FEEDBACK_OUTLINED, on_click=lambda e: export("feedback")),
             ft.PopupMenuItem(tr("m_theme"), icon=ft.Icons.BRIGHTNESS_6_OUTLINED, on_click=switch_theme),
             ft.PopupMenuItem(tr("m_font_up"), icon=ft.Icons.TEXT_INCREASE_OUTLINED, on_click=lambda e: font_pm(0.1)),
             ft.PopupMenuItem(tr("m_font_down"), icon=ft.Icons.TEXT_DECREASE_OUTLINED, on_click=lambda e: font_pm(-0.1))]
@@ -1365,7 +1433,7 @@ async def main(page: ft.Page):
         page.title = tr("title")
         UI["side_head"].value = tr("chats")
         search.hint_text = tr("search")
-        UI["new_btn"].text = tr("new_chat")
+        UI["new_btn"].content = tr("new_chat")
         UI["top_title"].value = tr("title")
         model_dd.label = tr("model")
         UI["refresh"].tooltip = tr("refresh_models")
@@ -1374,8 +1442,9 @@ async def main(page: ft.Page):
         else:
             conn_t.value = state["conn_custom"] if state["conn_custom"] is not None else (
                 tr("connected") if state["conn_ok"] else tr("no_conn"))
-        lang_btn.text = "EN" if CUR["lang"] == "ru" else "RU"
-        lang_btn.tooltip = "Switch to English" if CUR["lang"] == "ru" else "Переключить на русский"
+        lang_btn.label = tr("lang")
+        if lang_btn.value != CUR["lang"]:
+            lang_btn.value = CUR["lang"]
         UI["overflow"].items = make_overflow()  # пересоздать пункты меню
         UI["overflow"].tooltip = tr("more")
         UI["settings_title"].value = tr("settings")
@@ -1384,11 +1453,23 @@ async def main(page: ft.Page):
         refresh_presets()  # тексты пресетов + подписи на новом языке
         preset_name.label = tr("preset_name"); preset_name.hint_text = tr("preset_name_hint")
         sys_f.label = tr("sys_prompt")
-        UI["to_preset"].text = tr("to_preset")
+        UI["to_preset"].content = tr("to_preset")
         UI["del_preset"].tooltip = tr("del_preset")
-        UI["clear"].text = tr("clear")
-        UI["load_txt"].text = tr("load_txt"); UI["save_txt"].text = tr("save_txt")
+        UI["clear"].content = tr("clear")
+        UI["load_txt"].content = tr("load_txt"); UI["save_txt"].content = tr("save_txt")
         UI["attach"].tooltip = tr("attach")
+        UI["mic"].tooltip = tr("stt_mic")
+        send_images_cb.label = tr("vision_send")
+        UI["sec_profiles"].value = tr("sec_profiles")
+        UI["sec_env"].value = tr("sec_env")
+        profile_dd.label = tr("profile")
+        profile_name.label = tr("profile_name"); profile_name.hint_text = tr("profile_name_hint")
+        UI["profile_save"].content = tr("to_profile")
+        UI["profile_del"].tooltip = tr("del_profile")
+        UI["menu"].tooltip = tr("chats")
+        refresh_env_label()
+        try: env_label.update()
+        except Exception: pass
         inp.hint_text = tr("input_hint")
         btn_send.tooltip = tr("send")
         try: btn_stop.tooltip = tr("stop")
@@ -1398,7 +1479,9 @@ async def main(page: ft.Page):
                     UI["settings_title"], UI["sec_model"], UI["sec_prompt"],
                     preset_dd, preset_name, sys_f,
                     UI["to_preset"], UI["del_preset"], UI["clear"],
-                    UI["load_txt"], UI["save_txt"], UI["attach"], UI["mic"], inp, btn_send)
+                    UI["load_txt"], UI["save_txt"], UI["attach"], UI["mic"], inp, btn_send,
+                    UI["sec_profiles"], UI["sec_env"], profile_dd, profile_name,
+                    UI["profile_save"], UI["profile_del"], send_images_cb, env_label)
         try: safe_update(btn_stop)
         except NameError: pass
         try: sys_f.update()
@@ -1407,7 +1490,9 @@ async def main(page: ft.Page):
         chat_box.controls.clear()  # перерисовать подписи пузырей на новом языке
         for m in state["msgs"]: add_bubble(m)
         page.update()
-    lang_btn = ft.TextButton("EN", tooltip="Switch to English", on_click=toggle_lang)
+    lang_btn = ft.Dropdown(label=tr("lang"), value=CUR["lang"], width=110,
+                           options=[ft.DropdownOption("ru", "RU"), ft.DropdownOption("en", "EN")],
+                           on_select=set_lang)
 
     # --- (4) sidebar + slim-топбар: модель + статус, остальное в «⋮» ---
     UI["side_head"] = ft.Text(tr("chats"), weight=ft.FontWeight.BOLD, color=th["atc"])
@@ -1420,7 +1505,7 @@ async def main(page: ft.Page):
         try: sidebar.update()
         except Exception: pass
         page.update()
-    UI["menu"] = ft.IconButton(ft.Icons.MENU_OUTLINED, tooltip="Чаты / Chats", on_click=toggle_sidebar)
+    UI["menu"] = ft.IconButton(ft.Icons.MENU_OUTLINED, tooltip=tr("chats"), on_click=toggle_sidebar)
     UI["overflow_items"] = make_overflow()
     UI["refresh"] = ft.IconButton(ft.Icons.REFRESH_OUTLINED, tooltip=tr("refresh_models"), on_click=load_models)
     overflow = ft.PopupMenuButton(icon=ft.Icons.MORE_VERT_OUTLINED, tooltip=tr("more"),
@@ -1442,9 +1527,9 @@ async def main(page: ft.Page):
     UI["load_req"] = ft.OutlinedButton("requirements.txt", icon=ft.Icons.UPLOAD_FILE_OUTLINED, on_click=load_requirements)
     UI["load_env"] = ft.OutlinedButton(".env", icon=ft.Icons.UPLOAD_FILE_OUTLINED, on_click=load_dotenv)
     UI["clear_env"] = ft.OutlinedButton(tr("clear"), icon=ft.Icons.CLEAR_OUTLINED, on_click=clear_env)
-    UI["profile_save"] = ft.OutlinedButton("В профиль", icon=ft.Icons.BOOKMARK_ADD_OUTLINED, on_click=save_profile)
-    UI["profile_del"] = ft.IconButton(ft.Icons.DELETE_OUTLINE, tooltip="Удалить профиль", on_click=delete_profile)
-    UI["sec_profiles"] = ft.Text("Профили связок", size=13, weight=ft.FontWeight.BOLD, color=th["atc"])
+    UI["profile_save"] = ft.OutlinedButton(tr("to_profile"), icon=ft.Icons.BOOKMARK_ADD_OUTLINED, on_click=save_profile)
+    UI["profile_del"] = ft.IconButton(ft.Icons.DELETE_OUTLINE, tooltip=tr("del_profile"), on_click=delete_profile)
+    UI["sec_profiles"] = ft.Text(tr("sec_profiles"), size=13, weight=ft.FontWeight.BOLD, color=th["atc"])
     UI["top_title"] = ft.Text(tr("title"), weight=ft.FontWeight.BOLD, color=th["atc"])
     # Промпт — в том же ряду, что и модель: топбар из двух колонок (слева модель/статус, справа Промпт)
     preset_dd.width = 170
@@ -1474,6 +1559,7 @@ async def main(page: ft.Page):
                 spacing=6, expand=True)],
             spacing=8, vertical_alignment=ft.CrossAxisAlignment.START))
     # --- Настройки: Модель + Окружение (Промпт живёт в топбаре) ---
+    UI["sec_env"] = ft.Text(tr("sec_env"), size=13, weight=ft.FontWeight.BOLD, color=th["atc"])
     settings_p = ft.ExpansionTile(title=UI["settings_title"],
         leading=ft.Icon(ft.Icons.TUNE_OUTLINED, color=th["accent"]),
         controls=[
@@ -1493,7 +1579,7 @@ async def main(page: ft.Page):
                    ft.Row([profile_name, UI["profile_save"], UI["profile_del"]], wrap=True)], spacing=6),
         ft.Divider(height=4, color=th["border"]),
         ft.Column([ft.Row([ft.Icon(ft.Icons.DNS_OUTLINED, size=16, color=th["accent"]),
-                           ft.Text("Окружение / Environment", size=13, weight=ft.FontWeight.BOLD, color=th["atc"])],
+                           UI["sec_env"]],
                           spacing=6),
                    env_label,
                    ft.Row([UI["load_req"], UI["load_env"], UI["clear_env"]], wrap=True)], spacing=6)])
@@ -1514,7 +1600,7 @@ async def main(page: ft.Page):
         try:
             from voice import listen  # type: ignore
         except ImportError:
-            show_e("Нет SpeechRecognition: pip install SpeechRecognition PyAudio"); return
+            show_e(tr("e_no_stt")); return
         status.value = "🎤…"; page.update()
         try:
             text = await asyncio.get_running_loop().run_in_executor(
@@ -1522,7 +1608,7 @@ async def main(page: ft.Page):
             inp.value = ((inp.value or "") + " " + text).strip()
             inp.update(); on_inp(None); status.value = ""; page.update()
         except Exception as ex: show_e(str(ex))
-    UI["mic"] = ft.IconButton(ft.Icons.MIC_OUTLINED, tooltip="Голосовой ввод", on_click=do_listen)
+    UI["mic"] = ft.IconButton(ft.Icons.MIC_OUTLINED, tooltip=tr("stt_mic"), on_click=do_listen)
     btn_stop = ft.IconButton(ft.Icons.STOP_CIRCLE_OUTLINED, tooltip=tr("stop"), on_click=do_stop,
         visible=False, style=ft.ButtonStyle(color="#EF5350"))
     dock = ft.Container(bgcolor=th["input_bg"], border_radius=S["radius"] + 4, padding=8,
@@ -1564,9 +1650,9 @@ async def main(page: ft.Page):
         except Exception as ex:
             _log.warning("lms server stop failed: %s", ex)
 
-    async def on_app_close(e=None):
-        _log.info("app closing")
-        try:  # 1) сначала выгрузить модель — самый важный шаг
+    async def _exit_network():
+        """Выгрузка модели + стоп сервера. Вызывается под shield — переживает отмену задачи."""
+        try:
             lm = state.get("loaded_model")
             if lm:
                 try:
@@ -1575,25 +1661,37 @@ async def main(page: ft.Page):
                 except Exception as ex:
                     _log.warning("unload on exit failed: %s", ex)
                 state["loaded_model"] = None
-        except Exception as ex:
+        except BaseException as ex:
             _log.warning("exit unload block failed: %s", ex)
-        try:  # 2) геометрия окна + остальные настройки
-            if page.window.width: settings["window_width"] = int(page.window.width)
-            if page.window.height: settings["window_height"] = int(page.window.height)
-            if page.window.left is not None: settings["window_left"] = int(page.window.left)
-            if page.window.top is not None: settings["window_top"] = int(page.window.top)
+        try: await client.close()
+        except BaseException: pass
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, stop_lm_server)
+        except BaseException as ex:
+            _log.warning("server stop on exit failed: %s", ex)
+
+    async def on_app_close(e=None):
+        _log.info("app closing")
+        try:  # 1) геометрия окна — быстро и синхронно, первым делом
+            try: settings["window_maximized"] = bool(page.window.maximized)
+            except Exception: pass
+            if not settings.get("window_maximized"):
+                if page.window.width: settings["window_width"] = int(page.window.width)
+                if page.window.height: settings["window_height"] = int(page.window.height)
+                if page.window.left is not None: settings["window_left"] = int(page.window.left)
+                if page.window.top is not None: settings["window_top"] = int(page.window.top)
+            _log.info("saved geometry: %sx%s max=%s", settings.get("window_width"),
+                      settings.get("window_height"), settings.get("window_maximized"))
         except Exception as ex:
             _log.warning("save window geometry failed: %s", ex)
-        try:
+        try:  # 2) остальные настройки
             persist()
         except Exception as ex:
             _log.warning("persist on exit failed: %s", ex)
-        try: await client.close()
-        except Exception: pass
-        try:
-            await asyncio.get_running_loop().run_in_executor(None, stop_lm_server)
-        except Exception as ex:
-            _log.warning("server stop on exit failed: %s", ex)
+        try:  # 3) сеть под shield — flet отменяет задачу при закрытии окна
+            await asyncio.shield(_exit_network())
+        except BaseException as ex:
+            _log.warning("exit network cancelled: %s", type(ex).__name__)
         _log.info("exit handler done")
     page.on_close = on_app_close
 
