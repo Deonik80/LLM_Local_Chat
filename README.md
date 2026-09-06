@@ -1,105 +1,104 @@
 # 🤖 LM Studio Chat
 
-Чат-клиент на **Python + Flet** для взаимодействия с локальными LLM-моделями через API **LM Studio**.
+---
+🇺🇸 English | [🇷🇺 На русском языке](README.ru.md)
 ---
 
-## ✨ Ключевые особенности
-
-*   **📄 Чтение локальных документов (RAG-ready):** Автоматическое извлечение текста из файлов `.pdf`, `.docx`, `.xlsx`, `.csv`, `.txt`, `.py`, `.md` с умным ограничением контекста.
-*   **🖼️ Поддержка Мультимодальности (Vision):** Прикрепление изображений (`png`, `jpg`, `webp`, `gif`) с автоопределением того, поддерживает ли текущая модель зрение (с возможностью авто-фолбека на текстовый режим при HTTP 400).
-*   **🎭 Система пресетов и профилей:** Быстрое переключение системных промптов (Переводчик, Код-ревью и др.). Создание полноценных профилей, связывающих конкретную модель, промпт, температуру, `top_p`, `seed` и `context_length` в один клик.
-*   **📦 Загрузка окружения проекта:** Возможность подгрузить файлы `requirements.txt` и `.env` прямо в системный контекст модели для точечной разработки.
-*   **🔄 Управление генерацией:** Потоковый вывод (Streaming) с троттлингом для плавности, кнопка немедленной остановки (Stop). Поддержка перегенерации ответов и хранения альтернативных вариантов (Variants).
-*   **📈 Контроль токенов и сжатие:** Наглядный прогресс-бар заполнения контекста. Функция автоматического или ручного сжатия истории диалога (Summarization) при переполнении лимитов.
-*   **🗣️ Голосовой интерфейс:** Голосовой ввод сообщений (STT) и озвучка ответов ассистента (TTS).
-*   **📊 Оценка ответов и экспорт:** Выставление оценок сообщениям (Feedback loop) с экспортом логов в формат `JSONL` для последующего fine-tuning. Экспорт диалогов в `Markdown` и `HTML`.
-*   **🌐 Локализация и Темы:** Полная поддержка русского и английского языков (i18n), а также адаптивная Темная и Светлая темы оформления.
-*   **🧹 Чистый выход:** Автоматически выгружает модель из памяти LM Studio при закрытии приложения для экономии ресурсов видеокарты.
-
+A chat client built with **Python + Flet** for interacting with local LLMs via the **LM Studio** API.
 ---
 
-## 💻 Технологический стек
+## ✨ Key Features
 
-*   **Интерфейс:** [Flet](https://flet.dev) (Flutter для Python)
-*   **Сетевой клиент:** Async HTTP-запросы через [Httpx](https://python-httpx.org)
-*   **Парсеры:** `pypdf`, `python-docx`, `openpyxl`, `csv`
-*   **Асинхронность:** `asyncio`
+*   **📄 Local Document Reading (RAG-ready):** Automatic text extraction from `.pdf`, `.docx`, `.xlsx`, `.csv`, `.txt`, `.py`, and `.md` files with smart context limit management.
+*   **🖼️ Multimodality Support (Vision):** Attach images (`png`, `jpg`, `webp`, `gif`) with auto-detection of whether the current model supports vision (includes automatic fallback to text mode on HTTP 400 errors).
+*   **🎭 Preset & Profile System:** Quickly switch between system prompts (Translator, Code Review, etc.). Create complete profiles that link a specific model, prompt, temperature, `top_p`, `seed`, and `context_length` in a single click.
+*   **📦 Project Environment Loading:** Ability to load `requirements.txt` and `.env` files directly into the model's system context for precise development.
+*   **🔄 Generation Management:** Streaming output with throttling for smoothness, along with an immediate stop button. Support for regenerating responses and storing alternative text options (Variants).
+*   **📈 Token Control & Compression:** Visual progress bar tracking context utilization. Automatic or manual dialogue history compression (Summarization) when context limits are reached.
+*   **🗣️ Voice Interface:** Voice message input (STT) and assistant response read-aloud (TTS).
+*   **📊 Feedback Loop & Export:** Rate messages to create a feedback loop with log exporting in `JSONL` format for subsequent fine-tuning. Export dialogues to `Markdown` and `HTML`.
+*   **🌐 Localization & Themes:** Full support for English and Russian (i18n), featuring adaptive Dark and Light UI themes.
+*   **🧹 Clean Exit:** Automatically unloads the model from LM Studio's memory when the application closes to save GPU resources.
 
 ---
 
-## 🚀 Быстрый старт
+## 💻 Tech Stack
 
-Через bat файл run_app.bat (запускает сервер LM Studio и запускает чат)
+*   **UI Framework:** [Flet](https://flet.dev) (Flutter for Python)
+*   **Network Client:** Async HTTP requests via [Httpx](https://python-httpx.org)
+*   **Parsers:** `pypdf`, `python-docx`, `openpyxl`, `csv`
+*   **Asynchrony:** `asyncio`
 
-### Требования
+---
 
-Перед запуском убедитесь, что у вас установлены:
-1.  **Python 3.9 или выше**
-2.  Запущенный сервер **LM Studio** (по умолчанию ожидается адрес `http://localhost:1234/v1`). Запуск через run_app.bat запускает сервер LM Studio автоматом и запускает чат
+## 🚀 Quick Start
 
-### Установка зависимостей
+Via the `run_app.bat` batch file (automatically launches the LM Studio server and starts the chat).
 
-Склонируйте репозиторий и установите базовые пакеты, а также модули для обработки документов и голоса:
+### Requirements
+
+Before running the application, make sure you have:
+1.  **Python 3.9 or higher**
+2.  A running **LM Studio** server (defaults to `http://localhost:1234/v1`). Running the project via `run_app.bat` will start the LM Studio server automatically alongside the chat.
+
+### Installing Dependencies
+
+Clone the repository and install the base packages, along with modules for document processing and voice features:
 
 ```bash
 git clone https://github.com
-cd lm-studio-chat-advanced
+cd LLM_Local_Chat
 
-# Базовые зависимости
+# Base dependencies
 pip install flet httpx
 
-# Для чтения документов PDF, Word, Excel
+# For reading PDF, Word, and Excel documents
 pip install pypdf python-docx openpyxl
 
-# Для голосового ввода и озвучки (опционально)
+# For voice input and text-to-speech (optional)
 pip install edge-tts SpeechRecognition PyAudio
 ```
-*(Примечание: Название версии Flet в коде жестко зафиксировано под архитектуру 0.86.5)*
+*(Note: The Flet version in the code is strictly locked to the 0.86.5 architecture)*
 
-### Переменные окружения (Опционально)
+### Environment Variables (Optional)
 
-Вы можете переопределить настройки по умолчанию с помощью переменных среды или файла `.env`:
-*   `LM_STUDIO_URL` — базовый адрес API (дефолт: `http://localhost:1234/v1`).
-*   `DEFAULT_MODEL` — модель по умолчанию.
-*   `REQUEST_TIMEOUT` — таймаут запросов в секундах (дефолт: `180`).
-*   `CONTEXT_LENGTH` — размер контекста по умолчанию (дефолт: `8192`).
-*   `MAX_IMAGE_MB` / `MAX_TEXT_MB` — лимиты на размер вложений.
+You can override the default settings using environment variables or a `.env` file:
+*   `LM_STUDIO_URL` — Base API URL (default: `http://localhost:1234/v1`).
+*   `DEFAULT_MODEL` — The default model to load.
+*   `REQUEST_TIMEOUT` — Request timeout in seconds (default: `180`).
+*   `CONTEXT_LENGTH` — Default context size (default: `8192`).
+*   `MAX_IMAGE_MB` / `MAX_TEXT_MB` — Size limits for attachments.
 
-### Запуск приложения
+### Running the Application
 
 ```bash
 python.exe app.py
 ```
-Либо через bat файл run_app.bat
----
-
-## 📂 Структура данных приложения
-
-После первого запуска приложение создаст в корневой папке директорию `data/` со следующей структурой:
-*   `data/chats/` — история сообщений в формате JSON (на каждый чат свой файл).
-*   `data/index.json` — глобальный список чатов для сайдбара.
-*   `data/settings.json` — конфигурация UI, темы, языка и последних параметров слайдеров.
-*   `data/presets.json` — пользовательские системные промпты.
-*   `data/profiles.json` — ваши сохраненные профили связок.
+Or simply run the `run_app.bat` file.
 
 ---
 
-## ⌨️ Горячие клавиши
+## 📂 Application Data Structure
 
-*   `Ctrl + Enter` — Быстрая отправка сообщения из текстового поля.
-*   `Shift + Enter` — Перенос строки в поле ввода.
-*   `Ctrl + K` — Создать новый пустой чат.
-*   `Ctrl + F` — Открыть окно полнотекстового поиска внутри текущего диалога.
-*   `Escape` — Прервать текущую генерацию ответа (Стоп).
-
----
-
-## 📄 Лицензия
-
-Проект распространяется под лицензией **GNU GPLv3**. Подробнее см. в файле [LICENSE](LICENSE).
+After the first launch, the application will create a `data/` directory in the root folder with the following structure:
+*   `data/chats/` — Message history in JSON format (one file per chat).
+*   `data/index.json` — Global chat list for the sidebar.
+*   `data/settings.json` — UI configuration, themes, language, and recent slider parameters.
+*   `data/presets.json` — User-defined system prompts.
+*   `data/profiles.json` — Your saved profile configurations.
 
 ---
 
-<img width="856" height="1346" alt="1" src="https://github.com/user-attachments/assets/c4e9709a-90f6-4e8c-8faa-bea86ac12dc4" />
-<img width="856" height="1346" alt="2" src="https://github.com/user-attachments/assets/1d8d9431-9021-47e1-ad56-33a8c3bc41bb" />
-<img width="856" height="1346" alt="3" src="https://github.com/user-attachments/assets/32692c82-bebc-4802-a1db-ef47b87a669a" />
+## ⌨️ Hotkeys
+
+*   `Ctrl + Enter` — Fast message submission from the input field.
+*   `Shift + Enter` — Newline in the input field.
+*   `Ctrl + K` — Create a new empty chat.
+*   `Ctrl + F` — Open full-text search within the current dialogue.
+*   `Escape` — Interrupt the current response generation (Stop).
+
+---
+
+## 📄 License
+
+This project is distributed under the **GNU GPLv3** license. For more details, see the [LICENSE](LICENSE) file.
