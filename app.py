@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://gnu.org>.
 
-# LM Studio Chat — улучшенная версия
+# LM Studio Chat
 from __future__ import annotations
 import asyncio, base64, csv, html as html_mod, io, json, mimetypes, os, time, uuid
 from dataclasses import dataclass, field, asdict
