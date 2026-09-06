@@ -20,6 +20,6 @@
 
 Команда для быстрой установкиВы можете установить все необходимые зависимости одной командой в терминале:
 bashpip install flet httpx pypdf python-docx openpyxl edge-tts SpeechRecognition PyAudio
-<img width="856" height="1346" alt="3" src="https://github.com/user-attachments/assets/32692c82-bebc-4802-a1db-ef47b87a669a" />
-<img width="856" height="1346" alt="2" src="https://github.com/user-attachments/assets/1d8d9431-9021-47e1-ad56-33a8c3bc41bb" />
 <img width="856" height="1346" alt="1" src="https://github.com/user-attachments/assets/c4e9709a-90f6-4e8c-8faa-bea86ac12dc4" />
+<img width="856" height="1346" alt="2" src="https://github.com/user-attachments/assets/1d8d9431-9021-47e1-ad56-33a8c3bc41bb" />
+<img width="856" height="1346" alt="3" src="https://github.com/user-attachments/assets/32692c82-bebc-4802-a1db-ef47b87a669a" />
