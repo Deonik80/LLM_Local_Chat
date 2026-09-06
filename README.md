@@ -46,7 +46,7 @@ Before running the application, make sure you have:
 Clone the repository and install the base packages, along with modules for document processing and voice features:
 
 ```bash
-git clone https://github.com
+git clone https://github.com/Deonik80/LLM_Local_Chat.git
 cd LLM_Local_Chat
 
 # Base dependencies
