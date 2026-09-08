@@ -15,7 +15,47 @@
 
 # LM Studio Chat
 from __future__ import annotations
-import asyncio, base64, csv, html as html_mod, io, json, mimetypes, os, time, uuid
+import asyncio, base64, csv, html as html_mod, io, json, mimetypes, os, sys, subprocess, time, uuid
+# ---------- auto-install недостающих парсеров документов ----------
+# Только лёгкие pure-python пакеты: pypdf / python-docx / openpyxl.
+# Тяжёлые опциональные (PyAudio и т.п.) сюда не тянем, чтобы не ломать старт.
+_AUTO_DEPS = {
+    "pypdf": "pypdf",
+    "docx": "python-docx",
+    "openpyxl": "openpyxl",
+}
+
+def _ensure_doc_deps() -> None:
+    missing: list[str] = []
+    for mod, pip_name in _AUTO_DEPS.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(pip_name)
+    if not missing:
+        return
+    print(f"[deps] отсутствуют {missing}, устанавливаю: pip install {' '.join(missing)} ...")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", *missing],
+            check=False, timeout=180,
+        )
+    except Exception as ex:
+        print(f"[deps] автоустановка не удалась: {ex}")
+        return
+    # повторная проверка — что реально встало
+    still = []
+    for mod, pip_name in _AUTO_DEPS.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            if pip_name in missing:
+                still.append(pip_name)
+    if still:
+        print(f"[deps] не удалось установить: {still}. Выполните вручную: pip install {' '.join(still)}")
+
+_ensure_doc_deps()
+
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable, Optional
@@ -92,6 +132,10 @@ LANGS = {
     "pdf_empty": "[PDF без текстового слоя]", "clipped": "\n\n[...обрезано, всего {n} символов...]",
     "lang": "Язык", "fb_helpful": "Полезно", "fb_bad": "Неточно", "fb_harm": "Опасно",
     "tts_speak": "Озвучить", "stt_mic": "Голосовой ввод",
+    "mic_listening": "🎤 Говорите… нажмите микрофон для завершения",
+    "mic_stop_title": "Остановить запись",
+    "generating": "⏳ Модель думает…",
+    "typing": "✍️ Модель печатает…",
     "e_no_tts": "Нет TTS: pip install edge-tts",
     "e_no_stt": "Нет SpeechRecognition: pip install SpeechRecognition PyAudio",
     "copy_code": "Копировать код",
@@ -171,6 +215,10 @@ LANGS = {
     "pdf_empty": "[PDF has no text layer]", "clipped": "\n\n[...clipped, {n} chars total...]",
     "lang": "Language", "fb_helpful": "Helpful", "fb_bad": "Inaccurate", "fb_harm": "Harmful",
     "tts_speak": "Speak aloud", "stt_mic": "Voice input",
+    "mic_listening": "🎤 Listening… press mic to finish",
+    "mic_stop_title": "Stop recording",
+    "generating": "⏳ Thinking…",
+    "typing": "✍️ Typing…",
     "e_no_tts": "No TTS engine: pip install edge-tts",
     "e_no_stt": "No SpeechRecognition: pip install SpeechRecognition PyAudio",
     "copy_code": "Copy code",
@@ -981,10 +1029,19 @@ async def main(page: ft.Page):
                             else tr("vision_auto"))
             status.update()
         am = ChatMessage(text="", is_user=False); state["msgs"].append(am)
-        md = add_bubble(am); page.update()
+        md = add_bubble(am)
+        # --- визуализация ожидания: спиннер-статус + плейсхолдер в пузыре ---
+        md.value = tr("generating")
+        status.value = tr("generating"); status.color = th["accent"]; page.update()
         disp, buf, last = "", [], time.time()
+        _first_tok = True
         def on_delta(kind, tok):
-            nonlocal disp, last
+            nonlocal disp, last, _first_tok
+            if _first_tok:
+                _first_tok = False
+                try:
+                    status.value = tr("typing"); page.update()
+                except Exception: pass
             buf.append(tok if kind == "content" else f"`{tok}`")
             if time.time() - last > 0.15:  # #9 троттлинг по времени
                 disp += "".join(buf); buf.clear(); md.value = disp; md.update()
@@ -997,10 +1054,10 @@ async def main(page: ft.Page):
             am.text = content or reasoning or disp; md.value = am.text
             if not _strip_images and _has_img_f(api):
                 _vision_mark_good(_model_id)  # картинки прошли — модель с vision
-            save_chat(state["cid"], state["msgs"]); upd_tokens(); status.value = ""; page.update()
+            save_chat(state["cid"], state["msgs"]); upd_tokens(); status.value = ""; status.color = th["muted"]; page.update()
             scroll_end()
         except StreamCancelled:
-            am.text = md.value or ""; save_chat(state["cid"], state["msgs"]); status.value = tr("stopped"); page.update()
+            am.text = md.value or ""; save_chat(state["cid"], state["msgs"]); status.value = tr("stopped"); status.color = th["muted"]; page.update()
             scroll_end()
         except RuntimeError as ex:
             _log.error("generate failed: %s", ex)
@@ -1607,13 +1664,29 @@ async def main(page: ft.Page):
             from voice import listen  # type: ignore
         except ImportError:
             show_e(tr("e_no_stt")); return
-        status.value = "🎤…"; page.update()
+        mic = UI["mic"]
+        # --- визуально: красная активная кнопка ---
+        _old = (mic.icon, mic.bgcolor, mic.icon_color, mic.tooltip)
+        try:
+            mic.icon = ft.Icons.MIC_ROUNDED
+            mic.bgcolor = "#EF5350"
+            mic.icon_color = "white"
+            mic.tooltip = tr("mic_stop_title")
+            mic.update()
+        except Exception: pass
+        status.value = tr("mic_listening"); status.color = "#EF5350"; page.update()
         try:
             text = await asyncio.get_running_loop().run_in_executor(
                 None, listen, "ru-RU" if CUR["lang"] == "ru" else "en-US")
             inp.value = ((inp.value or "") + " " + text).strip()
-            inp.update(); on_inp(None); status.value = ""; page.update()
+            inp.update(); on_inp(None)
         except Exception as ex: show_e(str(ex))
+        finally:  # --- возврат к базовому виду ---
+            try:
+                mic.icon, mic.bgcolor, mic.icon_color, mic.tooltip = _old
+                mic.update()
+            except Exception: pass
+            status.value = ""; status.color = th["muted"]; page.update()
     UI["mic"] = ft.IconButton(ft.Icons.MIC_OUTLINED, tooltip=tr("stt_mic"), on_click=do_listen)
     btn_stop = ft.IconButton(ft.Icons.STOP_CIRCLE_OUTLINED, tooltip=tr("stop"), on_click=do_stop,
         visible=False, style=ft.ButtonStyle(color="#EF5350"))
