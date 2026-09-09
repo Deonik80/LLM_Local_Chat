@@ -4,6 +4,12 @@
 [🇺🇸 English version](README.md) | 🇷🇺 На русском
 ---
 
+<img width="1444" height="1392" alt="1" src="https://github.com/user-attachments/assets/d552a57b-82c1-4a41-a7a3-4f5430204c8a" />
+<img width="1444" height="1392" alt="2" src="https://github.com/user-attachments/assets/2b4fdb0b-a0a5-4f48-b7d0-89220d7d36aa" />
+<img width="1444" height="1392" alt="3" src="https://github.com/user-attachments/assets/855fbf0f-9a92-4427-9833-b72f2590ec80" />
+<img width="1444" height="1392" alt="4" src="https://github.com/user-attachments/assets/9af5c387-0384-4b69-9a5a-c2a97c10a159" />
+
+---
 Чат-клиент на **Python + Flet** для взаимодействия с локальными LLM-моделями через API **LM Studio**.
 ---
 
