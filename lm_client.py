@@ -92,7 +92,7 @@ class LmClient:
     async def chat_stream(self, msgs, model, s: dict, on_delta: Callable):
         self._cancel = False
         payload = {"model": model, "messages": msgs, "temperature": s["temperature"],
-            "top_p": s.get("top_p", 1.0), "max_tokens": s["max_tokens"], "stream": True}
+            "max_tokens": s["max_tokens"], "stream": True}
         if s.get("seed", -1) >= 0: payload["seed"] = s["seed"]
         if s.get("repeat_penalty", 1.0) != 1.0: payload["repeat_penalty"] = s["repeat_penalty"]
         content, reasoning = "", ""

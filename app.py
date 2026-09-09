@@ -454,7 +454,7 @@ except ImportError:
         async def chat_stream(self, msgs, model, s: dict, on_delta: Callable):
             self._cancel = False
             payload = {"model": model, "messages": msgs, "temperature": s["temperature"],
-                "top_p": s.get("top_p", 1.0), "max_tokens": s["max_tokens"], "stream": True}
+                "max_tokens": s["max_tokens"], "stream": True}
             if s.get("seed", -1) >= 0: payload["seed"] = s["seed"]
             if s.get("repeat_penalty", 1.0) != 1.0: payload["repeat_penalty"] = s["repeat_penalty"]
             content, reasoning = "", ""
@@ -635,11 +635,12 @@ async def main(page: ft.Page):
     preset_dd = ft.Dropdown(label=tr("preset"), value=settings.get("preset", "Обычный"),
                             options=[ft.DropdownOption(key=k, text=preset_display(k)) for k in PRESETS])
     tmp = ft.Slider(min=0, max=2, divisions=40, value=settings.get("temperature", 0.7), expand=True)
-    topp = ft.Slider(min=0.1, max=1.0, divisions=18, value=settings.get("top_p", 1.0), expand=True)
+    CTX_MIN, CTX_MAX_DEFAULT = 1024, 131072
+    _ctx_init = min(CTX_MAX_DEFAULT, max(CTX_MIN, int(settings.get("context_length", 8192) or 8192)))
+    ctxlen = ft.Slider(min=CTX_MIN, max=CTX_MAX_DEFAULT, divisions=127,
+                       value=_ctx_init, expand=True)
     maxt = ft.TextField(label="max_tokens", value=str(settings.get("max_tokens", 2048)), width=120)
     seed = ft.TextField(label="seed (-1=off)", value=str(settings.get("seed", -1)), width=120)
-    ctxlen = ft.TextField(label="Context Length tokens", value=str(settings.get("context_length", 8192)), width=170,
-                          hint_text="e.g. 8192")
     send_images_cb = ft.Checkbox(label=tr("vision_send"),
                                  value=bool(settings.get("send_images", True)))
     attach_row = ft.Row(spacing=8, wrap=True)
@@ -647,11 +648,11 @@ async def main(page: ft.Page):
     picker: ft.FilePicker = page.services[0]
 
     def persist():
-        try: cl = int(str(ctxlen.value or 8192))
-        except ValueError: cl = 8192
+        try: cl = int(float(ctxlen.value or 8192))
+        except (ValueError, TypeError): cl = 8192
         cl = min(1000000, max(512, cl))
         settings.update(system_prompt=sys_f.value or "", temperature=float(tmp.value or 0.7),
-            top_p=float(topp.value or 1.0), max_tokens=int(str(maxt.value or 2048)),
+            max_tokens=int(str(maxt.value or 2048)),
             seed=int(str(seed.value or -1)), preset=preset_dd.value, context_length=cl,
             send_images=bool(send_images_cb.value))
         # модель пишем только после реального выбора пользователем, иначе стартовый
@@ -947,13 +948,94 @@ async def main(page: ft.Page):
             except Exception as ex:
                 _log.warning("unload_model(%s) failed: %s", prev, ex)
             state["loaded_model"] = None
+        load_info: dict = {}
         try:
-            await client.load_model(sel)  # …только потом грузить новую
+            load_info = await client.load_model(sel) or {}  # …только потом грузить новую
         except Exception as ex:
             _log.error("load_model(%s) failed: %s", sel, ex)
             show_e(tr("e_load_model", m=sel, e=ex))
             return
         state["loaded_model"] = sel
+        try:  # максимум ползунка = лимит контекста загруженной модели с сервера
+            import httpx as _hx
+
+            def _pick_max(obj) -> int | None:
+                if isinstance(obj, dict):
+                    # прямые ключи + вложенные meta/info/params
+                    for k in ("max_context_length", "max_context", "context_length",
+                              "n_ctx", "n_ctx_train", "contextLength"):
+                        v = obj.get(k)
+                        if isinstance(v, (int, float)) and v >= 1024:
+                            return int(v)
+                    for k in ("meta", "info", "params", "model", "data"):
+                        v = _pick_max(obj.get(k))
+                        if v:
+                            return v
+                elif isinstance(obj, list):
+                    for it in obj:
+                        v = _pick_max(it)
+                        if v:
+                            return v
+                return None
+
+            found: int | None = _pick_max(load_info)
+            if not found:
+                # сервер /v1/models обычно отдаёт только id — пробуем расширенные эндпоинты
+                bases = [BASE_URL.rstrip("/")]
+                root = bases[0][:-3] if bases[0].endswith("/v1") else bases[0]
+                if root not in bases:
+                    bases.append(root)
+                paths = ["/models", "/api/v1/models", "/api/v0/models",
+                         "/v1/models", "/api/v1/model", "/api/v0/model/info"]
+                async with _hx.AsyncClient(timeout=15) as _c:
+                    for b in bases:
+                        if found:
+                            break
+                        for p in paths:
+                            try:
+                                r = await _c.get(b + p)
+                                r.raise_for_status()
+                                j = r.json()
+                                cands = []
+                                if isinstance(j, dict):
+                                    for m in (j.get("data") or []):
+                                        if isinstance(m, dict) and m.get("id") in (sel, None):
+                                            cands.append(m)
+                                    if not cands and isinstance(j.get("data"), list):
+                                        cands = [x for x in j["data"] if isinstance(x, dict)]
+                                    cands.append(j)
+                                elif isinstance(j, list):
+                                    cands = [x for x in j if isinstance(x, dict)]
+                                for c in cands:
+                                    # точное совпадение id — приоритет
+                                    if c.get("id") not in (None, sel):
+                                        continue
+                                    found = _pick_max(c)
+                                    if found:
+                                        break
+                                if found:
+                                    break
+                            except Exception:
+                                continue
+            if found:
+                found = min(1000000, found)
+                ctxlen.max = float(found)
+                if float(ctxlen.value or 0) > ctxlen.max:
+                    ctxlen.value = ctxlen.max
+                ctxlen_val.value = f"{int(float(ctxlen.value or 0))}"
+                ctxlen.update(); ctxlen_val.update(); persist()
+                _log.info("ctx slider max set to %s for %s", found, sel)
+            else:
+                # лимит не отдал сервер — не занижаем: расширяем до 1M, чтобы
+                # модели на 262k+ можно было выставить вручную
+                if float(ctxlen.max or 0) < 1000000:
+                    ctxlen.max = float(1000000)
+                    try: ctxlen.update()
+                    except Exception: pass
+                _log.warning("ctx max not advertised for %s (load_info keys=%s)",
+                             sel, list(load_info.keys()) if isinstance(load_info, dict) else type(load_info))
+        except Exception as ex:
+            _log.warning("ctx max lookup failed: %s", ex)
         try:
             if store is not None: store._emit("model:loaded")
         except Exception: pass
@@ -1343,10 +1425,11 @@ async def main(page: ft.Page):
         hide_e()
         try: tmp.value = float(p.get("temperature", 0.7)); tmp_val.value = f"{float(tmp.value):.2f}"; tmp.update(); tmp_val.update()
         except Exception: pass
-        try: topp.value = float(p.get("top_p", 1.0)); topp_val.value = f"{float(topp.value):.2f}"; topp.update(); topp_val.update()
-        except Exception: pass
         maxt.value = str(p.get("max_tokens", 2048)); seed.value = str(p.get("seed", -1))
-        ctxlen.value = str(p.get("context_length", 8192))
+        try:
+            _cv = min(float(ctxlen.max or 131072), max(float(ctxlen.min or 1024), float(p.get("context_length", 8192))))
+            ctxlen.value = _cv; ctxlen_val.value = f"{int(_cv)}"; ctxlen.update(); ctxlen_val.update()
+        except Exception: pass
         send_images_cb.value = bool(p.get("send_images", True))
         try:
             for c in (maxt, seed, ctxlen, send_images_cb): c.update()
@@ -1376,8 +1459,8 @@ async def main(page: ft.Page):
         profs = _load_profiles()
         profs[name] = {"model": model_dd.value or "", "preset": preset_dd.value,
             "system_prompt": sys_f.value or "", "temperature": float(tmp.value or 0.7),
-            "top_p": float(topp.value or 1.0), "max_tokens": str(maxt.value or 2048),
-            "seed": str(seed.value or -1), "context_length": str(ctxlen.value or 8192),
+            "max_tokens": str(maxt.value or 2048),
+            "seed": str(seed.value or -1), "context_length": str(int(float(ctxlen.value or 8192))),
             "send_images": bool(send_images_cb.value)}
         try: _save_profiles(profs)
         except Exception as ex: show_e(str(ex)); return
@@ -1444,14 +1527,10 @@ async def main(page: ft.Page):
     profile_dd.on_select = apply_profile
     # (7) живые значения слайдеров
     tmp_val = ft.Text(f"{float(tmp.value or 0.7):.2f}", size=12, color=th["atc"], width=36)
-    topp_val = ft.Text(f"{float(topp.value or 1.0):.2f}", size=12, color=th["atc"], width=36)
+    ctxlen_val = ft.Text(f"{int(float(ctxlen.value or 8192))}", size=12, color=th["atc"], width=52)
     def on_tmp(e): tmp_val.value = f"{float(tmp.value or 0):.2f}"; tmp_val.update(); persist()
-    def on_topp(e): topp_val.value = f"{float(topp.value or 0):.2f}"; topp_val.update(); persist()
-    tmp.on_change = on_tmp; topp.on_change = on_topp
-    def on_ctx(e=None):
-        persist(); upd_tokens()
-    try: ctxlen.on_blur = on_ctx
-    except Exception: pass
+    def on_ctxlen(e): ctxlen_val.value = f"{int(float(ctxlen.value or 0))}"; ctxlen_val.update(); persist(); upd_tokens()
+    tmp.on_change = on_tmp; ctxlen.on_change = on_ctxlen
     send_images_cb.on_change = lambda e: persist()
     def switch_theme(e):
         settings["theme"] = "light" if settings.get("theme") == "dark" else "dark"
@@ -1630,9 +1709,9 @@ async def main(page: ft.Page):
             ft.Icons.SMART_TOY_OUTLINED,
             ft.Row([ft.Text("Temperature", size=13, color=th["atc"], width=90), tmp, tmp_val],
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Row([ft.Text("top_p", size=13, color=th["atc"], width=90), topp, topp_val],
+            ft.Row([ft.Text("Context Length", size=13, color=th["atc"], width=90), ctxlen, ctxlen_val],
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Row([maxt, seed, ctxlen], wrap=True),
+            ft.Row([maxt, seed], wrap=True),
             ft.Row([send_images_cb], wrap=True)),
         ft.Divider(height=4, color=th["border"]),
         ft.Column([ft.Row([ft.Icon(ft.Icons.LAYERS_OUTLINED, size=16, color=th["accent"]),
