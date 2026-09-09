@@ -1729,25 +1729,50 @@ async def main(page: ft.Page):
         except Exception as ex:
             _log.warning("lms server stop failed: %s", ex)
 
+    def unload_via_cli(model_id: str | None = None):
+        """Fallback: выгрузка через `lms unload`, если HTTP API не сработал."""
+        import shutil, subprocess
+        lms = shutil.which("lms")
+        if not lms:
+            return
+        # сначала точечно модель, потом всё остальное
+        cmds = []
+        if model_id:
+            cmds.append([lms, "unload", model_id])
+        cmds.append([lms, "unload", "--all"])
+        for cmd in cmds:
+            try:
+                r = subprocess.run(cmd, timeout=30, capture_output=True, text=True)
+                _log.info("lms %s: %s", " ".join(cmd[1:]), (r.stdout or r.stderr or "ok").strip()[:200])
+                if r.returncode == 0:
+                    break
+            except Exception as ex:
+                _log.warning("lms unload failed: %s", ex)
+
     async def _exit_network():
         """Выгрузка модели + стоп сервера. Вызывается под shield — переживает отмену задачи."""
         try:
-            lm = state.get("loaded_model")
+            lm = state.get("loaded_model") or (model_dd.value or None)
             if lm:
                 try:
                     await asyncio.wait_for(client.unload_model(lm), timeout=15)
                     _log.info("unloaded model on exit: %s", lm)
                 except Exception as ex:
-                    _log.warning("unload on exit failed: %s", ex)
+                    _log.warning("unload on exit via API failed: %s — пробую lms unload", ex)
+                    try:
+                        await asyncio.get_running_loop().run_in_executor(None, unload_via_cli, lm)
+                    except BaseException as ex2:
+                        _log.warning("unload via CLI failed: %s", ex2)
                 state["loaded_model"] = None
         except BaseException as ex:
             _log.warning("exit unload block failed: %s", ex)
-        try: await client.close()
-        except BaseException: pass
+        # стоп сервера — СТРОГО после выгрузки, пока клиент ещё жив
         try:
             await asyncio.get_running_loop().run_in_executor(None, stop_lm_server)
         except BaseException as ex:
             _log.warning("server stop on exit failed: %s", ex)
+        try: await client.close()
+        except BaseException: pass
 
     async def on_app_close(e=None):
         _log.info("app closing")

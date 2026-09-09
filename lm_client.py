@@ -60,11 +60,25 @@ class LmClient:
         return r.json()
 
     async def unload_model(self, instance_id: str) -> dict:
-        """Выгрузить ранее загруженную модель из памяти сервера."""
-        r = await self._c.post(self._root() + "/api/v1/models/unload",
-                               json={"instance_id": instance_id})
-        r.raise_for_status()
-        return r.json()
+        """Выгрузить ранее загруженную модель из памяти сервера.
+
+        state хранит model_id (напр. 'omnicoder-9b'), а сервер в новых
+        версиях ждёт instance_id — поэтому пробуем оба варианта payload.
+        """
+        last = None
+        for payload in ({"instance_id": instance_id}, {"model": instance_id}):
+            try:
+                r = await self._c.post(self._root() + "/api/v1/models/unload",
+                                       json=payload)
+                r.raise_for_status()
+                try:
+                    return r.json()
+                except Exception:
+                    return {}
+            except Exception as e:
+                last = e
+                continue
+        raise RuntimeError(str(last))
 
     async def fetch_models(self) -> list[str]:
         last = None
