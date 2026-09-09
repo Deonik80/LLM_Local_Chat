@@ -9,6 +9,7 @@ A chat client built with **Python + Flet** for interacting with local LLMs via t
 
 ## ✨ Key Features
 
+*   **📦 Auto-dependencies:** On startup the app checks `pypdf` / `python-docx` / `openpyxl` and installs anything missing with the same Python interpreter; `run_app.bat` additionally runs `pip install -r requirements.txt`.
 *   **📄 Local Document Reading (RAG-ready):** Automatic text extraction from `.pdf`, `.docx`, `.xlsx`, `.csv`, `.txt`, `.py`, and `.md` files with smart context limit management.
 *   **🖼️ Multimodality Support (Vision):** Attach images (`png`, `jpg`, `webp`, `gif`) with auto-detection of whether the current model supports vision (includes automatic fallback to text mode on HTTP 400 errors).
 *   **🎭 Preset & Profile System:** Quickly switch between system prompts (Translator, Code Review, etc.). Create complete profiles that link a specific model, prompt, temperature, `top_p`, `seed`, and `context_length` in a single click.
@@ -16,7 +17,6 @@ A chat client built with **Python + Flet** for interacting with local LLMs via t
 *   **🔄 Generation Management:** Streaming output with throttling for smoothness, along with an immediate stop button. Visible generation status (`Thinking…` → `Typing…`) in the bubble and status bar. Support for regenerating responses and storing alternative text options (Variants).
 *   **📈 Token Control & Compression:** Visual progress bar tracking context utilization. Automatic or manual dialogue history compression (Summarization) when context limits are reached.
 *   **🗣️ Voice Interface:** Voice message input (STT) with a red recording indicator on the mic button, and assistant response read-aloud (TTS, `edge-tts` online or `pyttsx3` offline, in-app playback).
-*   **📦 Auto-dependencies:** On startup the app checks `pypdf` / `python-docx` / `openpyxl` and installs anything missing with the same Python interpreter; `run_app.bat` additionally runs `pip install -r requirements.txt`.
 *   **📊 Feedback Loop & Export:** Rate messages to create a feedback loop with log exporting in `JSONL` format for subsequent fine-tuning. Export dialogues to `Markdown` and `HTML`.
 *   **🌐 Localization & Themes:** Full support for English and Russian (i18n), featuring adaptive Dark and Light UI themes.
 *   **🧹 Clean Exit:** Automatically unloads the model from LM Studio's memory when the application closes to save GPU resources.
