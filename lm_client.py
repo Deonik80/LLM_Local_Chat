@@ -96,6 +96,7 @@ class LmClient:
         if s.get("seed", -1) >= 0: payload["seed"] = s["seed"]
         if s.get("repeat_penalty", 1.0) != 1.0: payload["repeat_penalty"] = s["repeat_penalty"]
         content, reasoning = "", ""
+        usage: dict = {}
         for attempt in range(2):  # автореконнект: 1 ретрай при обрыве SSE
             try:
                 async with self._c.stream("POST", self._chat_url, json=payload) as r:
@@ -107,6 +108,8 @@ class LmClient:
                         if d == "[DONE]": break
                         try: j = json.loads(d)
                         except ValueError: continue
+                        if isinstance(j.get("usage"), dict):  # финальный чанк со счётчиками
+                            usage = j["usage"]
                         ch = j.get("choices", [{}])[0] if isinstance(j.get("choices"), list) else {}
                         delta = ch.get("delta", {}) or {}
                         if delta.get("reasoning_content"):
@@ -131,4 +134,4 @@ class LmClient:
                 if self._log: self._log.warning("sse interrupted, retrying: %s", e)
                 await asyncio.sleep(1.5 * (attempt + 1))  # backoff перед ретраем
                 continue
-        return content, reasoning
+        return content, reasoning, usage

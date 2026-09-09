@@ -365,16 +365,17 @@ except ImportError:
         variants: list = field(default_factory=list)  # альтернативные ответы (4)
         rating: Optional[int] = None  # 1..5 feedback (assistant only)
         feedback_type: Optional[str] = None  # helpful|inaccurate|harmful|other
+        gen_stats: Optional[str] = None  # "N tok · X tok/s · Ys" — подпись под ответом
         def to_dict(self):
             return {"text": self.text, "is_user": self.is_user, "ts": self.ts,
                     "attachments": [a.to_dict() if isinstance(a, Attachment) else a for a in self.attachments],
                     "variants": self.variants, "rating": self.rating,
-                    "feedback_type": self.feedback_type}
+                    "feedback_type": self.feedback_type, "gen_stats": self.gen_stats}
         @staticmethod
         def from_dict(d):
             atts = [Attachment.from_dict(a) if isinstance(a, dict) and "path" in a else a for a in d.get("attachments", [])]
             return ChatMessage(d["text"], d["is_user"], d.get("ts", 0), atts, d.get("variants", []),
-                               d.get("rating"), d.get("feedback_type"))
+                               d.get("rating"), d.get("feedback_type"), d.get("gen_stats"))
 
 class FileError(Exception): pass
 class StreamCancelled(Exception): pass
@@ -457,7 +458,7 @@ except ImportError:
                 "max_tokens": s["max_tokens"], "stream": True}
             if s.get("seed", -1) >= 0: payload["seed"] = s["seed"]
             if s.get("repeat_penalty", 1.0) != 1.0: payload["repeat_penalty"] = s["repeat_penalty"]
-            content, reasoning = "", ""
+            content, reasoning, usage = "", "", {}
             for attempt in range(2):  # автореконнект: 1 ретрай при обрыве SSE
                 try:
                     async with self._c.stream("POST", CHAT_URL, json=payload) as r:
@@ -469,6 +470,8 @@ except ImportError:
                             if d == "[DONE]": break
                             try: j = json.loads(d)
                             except ValueError: continue
+                            if isinstance(j.get("usage"), dict):
+                                usage = j["usage"]
                             ch = j.get("choices", [{}])[0] if isinstance(j.get("choices"), list) else {}
                             delta = ch.get("delta", {}) or {}
                             if delta.get("reasoning_content"):
@@ -488,7 +491,7 @@ except ImportError:
                         raise RuntimeError(tr("net_err", e=e))
                     await asyncio.sleep(1.5 * (attempt + 1))  # backoff перед ретраем
                     continue
-            return content, reasoning
+            return content, reasoning, usage
 
 # ---------- 1: хранилище чатов (см. repositories.py; fallback — локальные функции) ----------
 try:
@@ -884,6 +887,8 @@ async def main(page: ft.Page):
                     md.value = m.text; save_chat(state["cid"], state["msgs"]); page.update()
                 acts.controls += [ft.IconButton(ft.Icons.ARROW_LEFT, icon_size=15, on_click=prev_v), vi]
         wrap.controls.append(acts)
+        if not m.is_user and getattr(m, "gen_stats", None):
+            wrap.controls.append(ft.Text(m.gen_stats, size=11, color=T["muted"]))
         chat_box.controls.append(wrap)
         if state.get("stick", True): scroll_end()
         return md
@@ -1116,11 +1121,14 @@ async def main(page: ft.Page):
         md.value = tr("generating")
         status.value = tr("generating"); status.color = th["accent"]; page.update()
         disp, buf, last = "", [], time.time()
+        t0 = time.time()
         _first_tok = True
+        t_first: float | None = None
         def on_delta(kind, tok):
-            nonlocal disp, last, _first_tok
+            nonlocal disp, last, _first_tok, t_first
             if _first_tok:
                 _first_tok = False
+                t_first = time.time()
                 try:
                     status.value = tr("typing"); page.update()
                 except Exception: pass
@@ -1130,13 +1138,36 @@ async def main(page: ft.Page):
                 if state.get("stick", True): scroll_end()
                 last = time.time()
         try:
-            content, reasoning = await client.chat_stream(api, model_dd.value or DEFAULT_MODEL, settings, on_delta)
+            res = await client.chat_stream(api, model_dd.value or DEFAULT_MODEL, settings, on_delta)
+            content, reasoning = res[0], res[1]
+            usage = res[2] if len(res) > 2 and isinstance(res[2], dict) else {}
             disp += "".join(buf)
             full = (f"> 💭 {tr('reasoning')}\n{reasoning}\n\n---\n" if reasoning and not content else "") + (content or reasoning or disp)
             am.text = content or reasoning or disp; md.value = am.text
             if not _strip_images and _has_img_f(api):
                 _vision_mark_good(_model_id)  # картинки прошли — модель с vision
-            save_chat(state["cid"], state["msgs"]); upd_tokens(); status.value = ""; status.color = th["muted"]; page.update()
+            # --- статистика генерации: токены + скорость ---
+            try:
+                t_end = time.time()
+                gen_tok = usage.get("completion_tokens")
+                if not isinstance(gen_tok, (int, float)) or gen_tok <= 0:
+                    try:
+                        gen_tok = estimate_tokens(am.text or "")
+                    except Exception:
+                        gen_tok = 0
+                span = max(0.01, t_end - (t_first or t0))
+                am.gen_stats = f"⚡ {int(gen_tok)} tok · {gen_tok / span:.1f} tok/s · {t_end - t0:.1f}s"
+                try:
+                    wrap_now = chat_box.controls[-1] if chat_box.controls else None
+                    if wrap_now is not None:
+                        wrap_now.controls.append(ft.Text(am.gen_stats, size=11, color=th["muted"]))
+                        wrap_now.update()
+                except Exception: pass
+            except Exception as ex:
+                _log.warning("gen stats failed: %s", ex)
+                am.gen_stats = None
+            save_chat(state["cid"], state["msgs"]); upd_tokens()
+            status.value = am.gen_stats or ""; status.color = th["muted"]; page.update()
             scroll_end()
         except StreamCancelled:
             am.text = md.value or ""; save_chat(state["cid"], state["msgs"]); status.value = tr("stopped"); status.color = th["muted"]; page.update()
@@ -1212,7 +1243,7 @@ async def main(page: ft.Page):
         keep = state["msgs"][-4:]; old = state["msgs"][:-4]
         txt = "\n".join(f"{'U' if m.is_user else 'A'}: {m.text[:500]}" for m in old)
         try:
-            c, _ = await client.chat_stream([{"role": "user", "content": tr("summary_of", t=txt[:8000])}],
+            c, *_ = await client.chat_stream([{"role": "user", "content": tr("summary_of", t=txt[:8000])}],
                 model_dd.value or DEFAULT_MODEL, settings, lambda k, t: None)
             state["msgs"] = [ChatMessage(text=tr("summary_hist", c=c), is_user=False)] + keep
             chat_box.controls.clear()
