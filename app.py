@@ -452,6 +452,90 @@ except ImportError:
                     return [m["id"] for m in r.json().get("data", []) if "id" in m]
                 except Exception as e: last = e; await asyncio.sleep(1 * (i + 1))
             raise RuntimeError(tr("no_link", u=BASE_URL, e=last))
+        def _loaded_from_api_models(j) -> tuple:
+            items: list = []
+            if isinstance(j, dict):
+                if isinstance(j.get("models"), list):
+                    items = j["models"]
+                elif isinstance(j.get("data"), list):
+                    items = j["data"]
+                elif "key" in j or ("id" in j and "loaded_instances" in j):
+                    items = [j]
+                else:
+                    return [], False
+            elif isinstance(j, list):
+                items = j
+            else:
+                return [], False
+            out: list[str] = []
+            understood = False
+            for m in items:
+                if not isinstance(m, dict):
+                    continue
+                inst = m.get("loaded_instances")
+                flag = None
+                if isinstance(inst, list):
+                    flag = len(inst) > 0
+                    understood = True
+                elif isinstance(inst, bool):
+                    flag = inst
+                    understood = True
+                if flag is None and isinstance(m.get("loaded"), bool):
+                    flag = m["loaded"]
+                    understood = True
+                if flag is None and isinstance(m.get("state"), str):
+                    flag = m["state"].lower() in ("loaded", "active", "running")
+                    understood = True
+                if flag is None:
+                    continue
+                if not flag:
+                    continue
+                for k in ("key", "id", "display_name", "name"):
+                    v = m.get(k)
+                    if isinstance(v, str) and v and v not in out:
+                        out.append(v)
+                        break
+                if isinstance(inst, list):
+                    for ins in inst:
+                        if isinstance(ins, dict):
+                            v = ins.get("id")
+                            if isinstance(v, str) and v and v not in out:
+                                out.append(v)
+            return out, understood
+
+        async def loaded_models(self) -> list[str]:
+            root = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
+            for base in (root, BASE_URL):
+                for p in ("/api/v1/models", "/api/v0/models"):
+                    try:
+                        r = await self._c.get(base + p, timeout=15.0)
+                        r.raise_for_status()
+                        out, understood = _loaded_from_api_models(r.json())
+                        if understood:
+                            return out
+                    except Exception:
+                        continue
+            for base in (root, BASE_URL):
+                for p in ("/api/v1/models/loads", "/api/v1/models/loaded",
+                          "/api/v0/models/loads"):
+                    try:
+                        r = await self._c.get(base + p, timeout=15.0)
+                        r.raise_for_status()
+                        j = r.json()
+                        items = j.get("data", j) if isinstance(j, dict) else j
+                        if isinstance(items, dict):
+                            items = [items]
+                        if not isinstance(items, list):
+                            continue
+                        out = [x for x in
+                               (m.get("id") or m.get("model") or m.get("key")
+                                if isinstance(m, dict) else m for m in items)
+                               if isinstance(x, str) and x]
+                        if out:
+                            return out
+                    except Exception:
+                        continue
+            return []
         async def chat_stream(self, msgs, model, s: dict, on_delta: Callable):
             self._cancel = False
             payload = {"model": model, "messages": msgs, "temperature": s["temperature"],
@@ -927,12 +1011,136 @@ async def main(page: ft.Page):
             add_bubble(m)
         page.update()
 
+    async def _sync_ctx_max(sel: str, load_info: dict | None = None):
+        """Подтянуть max ползунка Context Length с сервера (best effort)."""
+        try:  # максимум ползунка = лимит контекста загруженной модели с сервера
+            import httpx as _hx
+
+            def _pick_max(obj) -> int | None:
+                if isinstance(obj, dict):
+                    # прямые ключи + вложенные meta/info/params
+                    for k in ("max_context_length", "max_context", "context_length",
+                              "n_ctx", "n_ctx_train", "contextLength"):
+                        v = obj.get(k)
+                        if isinstance(v, (int, float)) and v >= 1024:
+                            return int(v)
+                    for k in ("meta", "info", "params", "model", "data"):
+                        v = _pick_max(obj.get(k))
+                        if v:
+                            return v
+                elif isinstance(obj, list):
+                    for it in obj:
+                        v = _pick_max(it)
+                        if v:
+                            return v
+                return None
+
+            found: int | None = _pick_max(load_info or {})
+            if not found:
+                # сервер /v1/models обычно отдаёт только id — пробуем расширенные эндпоинты
+                bases = [BASE_URL.rstrip("/")]
+                root = bases[0][:-3] if bases[0].endswith("/v1") else bases[0]
+                if root not in bases:
+                    bases.append(root)
+                paths = ["/models", "/api/v1/models", "/api/v0/models",
+                         "/v1/models", "/api/v1/model", "/api/v0/model/info"]
+                async with _hx.AsyncClient(timeout=15) as _c:
+                    for b in bases:
+                        if found:
+                            break
+                        for p in paths:
+                            try:
+                                r = await _c.get(b + p)
+                                r.raise_for_status()
+                                j = r.json()
+                                cands = []
+                                if isinstance(j, dict):
+                                    # /api/v1/models -> {"models": [{key, max_context_length...}]}
+                                    entries = j.get("models") or j.get("data") or []
+                                    for m in entries:
+                                        if not isinstance(m, dict):
+                                            continue
+                                        ids = {m.get("id"), m.get("key"), m.get("display_name"),
+                                               m.get("name")}
+                                        if sel in ids or None in ids and m.get("id") is None:
+                                            cands.append(m)
+                                    if not cands and isinstance(j.get("data"), list):
+                                        cands = [x for x in j["data"] if isinstance(x, dict)]
+                                    cands.append(j)
+                                elif isinstance(j, list):
+                                    cands = [x for x in j if isinstance(x, dict)]
+                                for c in cands:
+                                    # точное совпадение id/key — приоритет
+                                    cids = {c.get("id"), c.get("key"), c.get("display_name"),
+                                            c.get("name")}
+                                    if sel not in cids and (c.get("id") is not None
+                                                            or c.get("key") is not None):
+                                        continue
+                                    found = _pick_max(c)
+                                    if found:
+                                        break
+                                if found:
+                                    break
+                            except Exception:
+                                continue
+            if found:
+                found = min(1000000, found)
+                ctxlen.max = float(found)
+                if float(ctxlen.value or 0) > ctxlen.max:
+                    ctxlen.value = ctxlen.max
+                ctxlen_val.value = f"{int(float(ctxlen.value or 0))}"
+                ctxlen.update(); ctxlen_val.update(); persist()
+                _log.info("ctx slider max set to %s for %s", found, sel)
+            else:
+                # лимит не отдал сервер — не занижаем: расширяем до 1M, чтобы
+                # модели на 262k+ можно было выставить вручную
+                if float(ctxlen.max or 0) < 1000000:
+                    ctxlen.max = float(1000000)
+                    try: ctxlen.update()
+                    except Exception: pass
+                _log.warning("ctx max not advertised for %s (load_info keys=%s)",
+                             sel, list((load_info or {}).keys()) if isinstance(load_info, dict) else type(load_info))
+        except Exception as ex:
+            _log.warning("ctx max lookup failed: %s", ex)
+
     async def load_models(e=None):
         try: models = await client.fetch_models()
         except RuntimeError as ex: _log.warning("fetch_models failed: %s", ex); show_e(str(ex)); set_conn(False); return
         if not models: models = [DEFAULT_MODEL]
         model_dd.options = [ft.DropdownOption(k, k) for k in models]
         saved = settings.get("model") or ""
+        # NEW: сервер уже держит модель в памяти? — используем её, вторую не грузим.
+        # loaded_models() смотрит только эндпоинты с явным loaded-state
+        # (GET /api/v1/models -> loaded_instances), каталог не в счёт.
+        # Пусто = ничего не загружено (или сервер не отдал) — грузим сохранённую.
+        try:
+            already = await client.loaded_models()
+        except Exception as ex:
+            _log.warning("loaded_models lookup failed: %s", ex)
+            already = []
+        if already:
+            pick = saved if saved in already else None
+            if pick is None:
+                for cand in already:  # key из API может отличаться написанием от id в /v1/models
+                    if cand in [o.key for o in model_dd.options]:
+                        pick = cand
+                        break
+            if pick is None:
+                pick = already[0]
+            if pick not in [o.key for o in model_dd.options]:
+                model_dd.options = [ft.DropdownOption(pick, pick)] + model_dd.options
+            model_dd.value = pick
+            try: model_dd.update()
+            except Exception: pass
+            state["models_n"] = len(models)
+            state["loaded_model"] = pick
+            state["model_touched"] = True
+            persist()  # запомнить подхваченную модель как текущую
+            set_conn(True, tr("models_n", n=len(models))); page.update()
+            _log.info("adopted already-loaded model on server: %s (server holds: %s)", pick, already)
+            status.value = tr("model_loaded", m=pick); page.update()
+            await _sync_ctx_max(pick, {})
+            return
         model_dd.value = saved if saved in models else models[0]
         try: model_dd.update()
         except Exception: pass
@@ -961,86 +1169,7 @@ async def main(page: ft.Page):
             show_e(tr("e_load_model", m=sel, e=ex))
             return
         state["loaded_model"] = sel
-        try:  # максимум ползунка = лимит контекста загруженной модели с сервера
-            import httpx as _hx
-
-            def _pick_max(obj) -> int | None:
-                if isinstance(obj, dict):
-                    # прямые ключи + вложенные meta/info/params
-                    for k in ("max_context_length", "max_context", "context_length",
-                              "n_ctx", "n_ctx_train", "contextLength"):
-                        v = obj.get(k)
-                        if isinstance(v, (int, float)) and v >= 1024:
-                            return int(v)
-                    for k in ("meta", "info", "params", "model", "data"):
-                        v = _pick_max(obj.get(k))
-                        if v:
-                            return v
-                elif isinstance(obj, list):
-                    for it in obj:
-                        v = _pick_max(it)
-                        if v:
-                            return v
-                return None
-
-            found: int | None = _pick_max(load_info)
-            if not found:
-                # сервер /v1/models обычно отдаёт только id — пробуем расширенные эндпоинты
-                bases = [BASE_URL.rstrip("/")]
-                root = bases[0][:-3] if bases[0].endswith("/v1") else bases[0]
-                if root not in bases:
-                    bases.append(root)
-                paths = ["/models", "/api/v1/models", "/api/v0/models",
-                         "/v1/models", "/api/v1/model", "/api/v0/model/info"]
-                async with _hx.AsyncClient(timeout=15) as _c:
-                    for b in bases:
-                        if found:
-                            break
-                        for p in paths:
-                            try:
-                                r = await _c.get(b + p)
-                                r.raise_for_status()
-                                j = r.json()
-                                cands = []
-                                if isinstance(j, dict):
-                                    for m in (j.get("data") or []):
-                                        if isinstance(m, dict) and m.get("id") in (sel, None):
-                                            cands.append(m)
-                                    if not cands and isinstance(j.get("data"), list):
-                                        cands = [x for x in j["data"] if isinstance(x, dict)]
-                                    cands.append(j)
-                                elif isinstance(j, list):
-                                    cands = [x for x in j if isinstance(x, dict)]
-                                for c in cands:
-                                    # точное совпадение id — приоритет
-                                    if c.get("id") not in (None, sel):
-                                        continue
-                                    found = _pick_max(c)
-                                    if found:
-                                        break
-                                if found:
-                                    break
-                            except Exception:
-                                continue
-            if found:
-                found = min(1000000, found)
-                ctxlen.max = float(found)
-                if float(ctxlen.value or 0) > ctxlen.max:
-                    ctxlen.value = ctxlen.max
-                ctxlen_val.value = f"{int(float(ctxlen.value or 0))}"
-                ctxlen.update(); ctxlen_val.update(); persist()
-                _log.info("ctx slider max set to %s for %s", found, sel)
-            else:
-                # лимит не отдал сервер — не занижаем: расширяем до 1M, чтобы
-                # модели на 262k+ можно было выставить вручную
-                if float(ctxlen.max or 0) < 1000000:
-                    ctxlen.max = float(1000000)
-                    try: ctxlen.update()
-                    except Exception: pass
-                _log.warning("ctx max not advertised for %s (load_info keys=%s)",
-                             sel, list(load_info.keys()) if isinstance(load_info, dict) else type(load_info))
-        except Exception as ex:
-            _log.warning("ctx max lookup failed: %s", ex)
+        await _sync_ctx_max(sel, load_info)
         try:
             if store is not None: store._emit("model:loaded")
         except Exception: pass

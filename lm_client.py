@@ -89,6 +89,102 @@ class LmClient:
             except Exception as e: last = e; await asyncio.sleep(1 * (i + 1))
         raise RuntimeError(self._tr("no_link", u=self._base_url, e=last))
 
+    @staticmethod
+    def _loaded_from_api_models(j) -> tuple[list[str], bool]:
+        """Разобрать GET /api/v1/models: какие модели реально в памяти.
+
+        Возвращает (ids, understood): understood=False — у ответа нет
+        признаков loaded-state (например, каталог без loaded_instances),
+        по нему решать нельзя.
+        """
+        items: list = []
+        if isinstance(j, dict):
+            if isinstance(j.get("models"), list):
+                items = j["models"]
+            elif isinstance(j.get("data"), list):
+                items = j["data"]
+            elif "key" in j or ("id" in j and "loaded_instances" in j):
+                items = [j]
+            else:
+                return [], False
+        elif isinstance(j, list):
+            items = j
+        else:
+            return [], False
+        out: list[str] = []
+        understood = False
+        for m in items:
+            if not isinstance(m, dict):
+                continue
+            inst = m.get("loaded_instances")
+            flag: bool | None = None
+            if isinstance(inst, list):
+                flag = len(inst) > 0
+                understood = True
+            elif isinstance(inst, bool):
+                flag = inst
+                understood = True
+            if flag is None and isinstance(m.get("loaded"), bool):
+                flag = m["loaded"]
+                understood = True
+            if flag is None and isinstance(m.get("state"), str):
+                flag = m["state"].lower() in ("loaded", "active", "running")
+                understood = True
+            if flag is None:
+                continue  # про эту запись сказать нечего
+            if not flag:
+                continue
+            for k in ("key", "id", "display_name", "name"):
+                v = m.get(k)
+                if isinstance(v, str) and v and v not in out:
+                    out.append(v)
+                    break
+            if isinstance(inst, list):
+                for ins in inst:
+                    if isinstance(ins, dict):
+                        v = ins.get("id")
+                        if isinstance(v, str) and v and v not in out:
+                            out.append(v)
+        return out, understood
+
+    async def loaded_models(self) -> list[str]:
+        """Модели, уже загруженные в память сервера (best effort).
+
+        Только эндпоинты с явным loaded-state. Каталог без признаков
+        загрузки игнорируем — по нему решать нельзя. Пусто = грузим
+        сохранённую модель как раньше.
+        """
+        for p in ("/api/v1/models", "/api/v0/models"):
+            try:
+                r = await self._c.get(self._root() + p, timeout=15.0)
+                r.raise_for_status()
+                out, understood = self._loaded_from_api_models(r.json())
+                if understood:
+                    return out
+            except Exception:
+                continue
+        # legacy: прямые списки загруженного (200 + непусто = в памяти)
+        for p in ("/api/v1/models/loads", "/api/v1/models/loaded",
+                  "/api/v0/models/loads"):
+            try:
+                r = await self._c.get(self._root() + p, timeout=15.0)
+                r.raise_for_status()
+                j = r.json()
+                items = j.get("data", j) if isinstance(j, dict) else j
+                if isinstance(items, dict):
+                    items = [items]
+                if not isinstance(items, list):
+                    continue
+                out = [x for x in
+                       (m.get("id") or m.get("model") or m.get("key")
+                        if isinstance(m, dict) else m for m in items)
+                       if isinstance(x, str) and x]
+                if out:
+                    return out
+            except Exception:
+                continue
+        return []
+
     async def chat_stream(self, msgs, model, s: dict, on_delta: Callable):
         self._cancel = False
         payload = {"model": model, "messages": msgs, "temperature": s["temperature"],

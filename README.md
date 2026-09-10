@@ -1,20 +1,14 @@
 # 🤖 LM Studio Chat
+
 ---
 🇺🇸 English | [🇷🇺 На русском языке](README.ru.md)
 ---
 
-<img width="800" height="771" alt="1" src="https://github.com/user-attachments/assets/0c1e50d5-b1ea-4106-b25a-9d587a7c3149" />
-<img width="800" height="771" alt="2" src="https://github.com/user-attachments/assets/6b4e26f2-ea63-4b52-9c5f-61912e7840c1" />
-<img width="800" height="771" alt="3" src="https://github.com/user-attachments/assets/0d53d77a-a92f-4802-bb05-a8e0a2bc505c" />
-<img width="800" height="771" alt="4" src="https://github.com/user-attachments/assets/07475305-19d1-42c6-97f7-6ec1b4e6bdea" />
-
----
 A chat client built with **Python + Flet** for interacting with local LLMs via the **LM Studio** API.
 ---
 
 ## ✨ Key Features
 
-*   **📦 Auto-dependencies:** On startup the app checks `pypdf` / `python-docx` / `openpyxl` and installs anything missing with the same Python interpreter; `run_app.bat` additionally runs `pip install -r requirements.txt`.
 *   **📄 Local Document Reading (RAG-ready):** Automatic text extraction from `.pdf`, `.docx`, `.xlsx`, `.csv`, `.txt`, `.py`, and `.md` files with smart context limit management.
 *   **🖼️ Multimodality Support (Vision):** Attach images (`png`, `jpg`, `webp`, `gif`) with auto-detection of whether the current model supports vision (includes automatic fallback to text mode on HTTP 400 errors).
 *   **🎭 Preset & Profile System:** Quickly switch between system prompts (Translator, Code Review, etc.). Create complete profiles that link a specific model, prompt, temperature, `top_p`, `seed`, and `context_length` in a single click.
@@ -22,6 +16,7 @@ A chat client built with **Python + Flet** for interacting with local LLMs via t
 *   **🔄 Generation Management:** Streaming output with throttling for smoothness, along with an immediate stop button. Visible generation status (`Thinking…` → `Typing…`) in the bubble and status bar. Support for regenerating responses and storing alternative text options (Variants).
 *   **📈 Token Control & Compression:** Visual progress bar tracking context utilization. Automatic or manual dialogue history compression (Summarization) when context limits are reached.
 *   **🗣️ Voice Interface:** Voice message input (STT) with a red recording indicator on the mic button, and assistant response read-aloud (TTS, `edge-tts` online or `pyttsx3` offline, in-app playback).
+*   **📦 Auto-dependencies:** On startup the app checks `pypdf` / `python-docx` / `openpyxl` and installs anything missing with the same Python interpreter; `run_app.bat` additionally runs `pip install -r requirements.txt`.
 *   **📊 Feedback Loop & Export:** Rate messages to create a feedback loop with log exporting in `JSONL` format for subsequent fine-tuning. Export dialogues to `Markdown` and `HTML`.
 *   **🌐 Localization & Themes:** Full support for English and Russian (i18n), featuring adaptive Dark and Light UI themes.
 *   **🧹 Clean Exit:** Automatically unloads the model from LM Studio's memory when the application closes to save GPU resources.
@@ -94,7 +89,7 @@ After the first launch, the application will create a `data/` directory in the r
 *   `data/chats/` — Message history in JSON format (one file per chat).
 *   `data/attachments/` — Cached copies of attached files.
 *   `data/tts/` — Temporary TTS audio files (cleaned automatically).
-*   `data/app.log` — Application log.
+*   `data/logs/` — One log file per run (`app-YYYYMMDD-HHMMSS.log`, keeps the newest 20, `LOG_KEEP` overrides).
 *   `data/index.json` — Global chat list for the sidebar.
 *   `data/settings.json` — UI configuration, themes, language, and recent slider parameters.
 *   `data/presets.json` — User-defined system prompts.
