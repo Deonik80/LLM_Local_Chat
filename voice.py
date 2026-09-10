@@ -37,7 +37,34 @@ def clean_for_speech(text: str) -> str:
     t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)     # links -> text
     t = re.sub(r"[#>*_\-~|]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
-    return t[:2000]
+    return t[:20000]  # было 2000 — длинные ответы обрезались наполовину
+
+
+def split_for_speech(text: str, limit: int = 1800) -> list[str]:
+    """Нарезать текст на чанки по границам предложений (для edge-tts)."""
+    t = (text or "").strip()
+    if not t:
+        return []
+    if len(t) <= limit:
+        return [t]
+    parts = re.split(r"(?<=[.!?…\n])\s+", t)
+    chunks, cur = [], ""
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        while len(p) > limit:  # одно гигантское "предложение" — режем жёстко
+            chunks.append(p[:limit])
+            p = p[limit:]
+        if len(cur) + len(p) + 1 <= limit:
+            cur = (cur + " " + p).strip()
+        else:
+            if cur:
+                chunks.append(cur)
+            cur = p
+    if cur:
+        chunks.append(cur)
+    return chunks or [t]
 
 
 def listen(lang: str = "ru-RU", timeout: int = 8) -> str:
@@ -98,7 +125,12 @@ def is_playing() -> bool:
         return False
 
 
+_STOP_PLAY = False  # запрошена остановка (многофайловое воспроизведение)
+
+
 def stop_playback():
+    global _STOP_PLAY
+    _STOP_PLAY = True
     try:
         import pygame as _pg
         if _PG_OK:
@@ -107,23 +139,42 @@ def stop_playback():
         pass
 
 
-def _play_file(path: str):
-    """Проиграть внутри приложения (pygame); системный плеер — последний fallback."""
-    try:
-        if _pg_ensure():
-            import pygame as _pg
-            import time as _t
-            try:
-                _pg.mixer.music.load(path)
-                _pg.mixer.music.play()
-                while _pg.mixer.music.get_busy():
-                    _t.sleep(0.2)
-            finally:
-                try: _pg.mixer.music.unload()  # отпустить файловый хендл (Windows)
-                except Exception: pass
-            return
-    except Exception:
-        pass
+def _play_files(paths: list[str], on_progress=None) -> bool:
+    """Проиграть файлы по очереди. Возвращает False если остановили."""
+    global _STOP_PLAY
+    n = len(paths)
+    for i, path in enumerate(paths):
+        if _STOP_PLAY:
+            return False
+        if on_progress:
+            try: on_progress("playing", i + 1, n)
+            except Exception: pass
+        try:
+            if _pg_ensure():
+                import pygame as _pg
+                import time as _t
+                try:
+                    _pg.mixer.music.load(path)
+                    _pg.mixer.music.play()
+                    while _pg.mixer.music.get_busy():
+                        if _STOP_PLAY:
+                            try: _pg.mixer.music.stop()
+                            except Exception: pass
+                            return False
+                        _t.sleep(0.2)
+                finally:
+                    try: _pg.mixer.music.unload()  # отпустить файловый хендл (Windows)
+                    except Exception: pass
+                continue
+        except Exception:
+            pass
+        # fallback без pygame — по одному файлу системным плеером
+        _play_file_single(path)
+    return not _STOP_PLAY
+
+
+def _play_file_single(path: str):
+    """Проиграть один файл (fallback без pygame)."""
     try:
         import playsound as _ps
         _ps.playsound(path)
@@ -138,29 +189,53 @@ def _play_file(path: str):
         _sp.run(["xdg-open", path], check=False)
 
 
-def speak(text: str, lang: str = "ru"):
+def _play_file(path: str):
+    """Проиграть внутри приложения (pygame); системный плеер — последний fallback."""
+    _play_files([path])
+
+
+def speak(text: str, lang: str = "ru", on_progress=None):
+    """Озвучить весь текст. Длинный — чанками (иначе edge-tts режет).
+
+    on_progress(stage, i, n): stage 'prepare' (синтез чанка i/n) или
+    'playing' (воспроизведение i/n). Вызывается из рабочего потока.
+    """
+    global _STOP_PLAY
+    _STOP_PLAY = False
     clean = clean_for_speech(text)
     if not clean:
         raise VoiceError("Нечего озвучивать")
+    chunks = split_for_speech(clean)
+    n = len(chunks)
     # 1) edge-tts (качественно, нужен интернет): mp3 в data/tts + проигрывание
     try:
         import asyncio as _aio
         import edge_tts as _edge
         import time as _t
 
-        async def _run(p):
+        async def _run(p, txt):
             voice = "ru-RU-SvetlanaNeural" if lang.startswith("ru") else "en-US-AriaNeural"
-            await _edge.Communicate(clean, voice).save(p)
+            await _edge.Communicate(txt, voice).save(p)
 
-        out = str(_tts_dir() / f"tts_{int(_t.time() * 1000)}.mp3")  # уникальное имя
+        outs: list[str] = []
         try:
-            _aio.run(_run(out))
-            _play_file(out)
+            base = int(_t.time() * 1000)
+            for i, ch in enumerate(chunks):
+                if _STOP_PLAY:
+                    return
+                if on_progress:
+                    try: on_progress("prepare", i + 1, n)
+                    except Exception: pass
+                out = str(_tts_dir() / f"tts_{base}_{i}.mp3")
+                _aio.run(_run(out, ch))
+                outs.append(out)
+            _play_files(outs, on_progress=on_progress)
         finally:
-            try:
-                import os as _os
-                _os.remove(out)  # не копим файлы: один синтез — один файл
-            except OSError: pass
+            for out in outs:
+                try:
+                    import os as _os
+                    _os.remove(out)  # не копим файлы
+                except OSError: pass
         return
     except ImportError:
         pass

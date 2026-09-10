@@ -132,6 +132,8 @@ LANGS = {
     "pdf_empty": "[PDF без текстового слоя]", "clipped": "\n\n[...обрезано, всего {n} символов...]",
     "lang": "Язык", "fb_helpful": "Полезно", "fb_bad": "Неточно", "fb_harm": "Опасно",
     "tts_speak": "Озвучить", "stt_mic": "Голосовой ввод",
+    "tts_preparing": "⏳ Готовлю озвучку… ({i}/{n})",
+    "tts_playing": "🔊 Воспроизведение {i}/{n} (повторный клик — стоп)",
     "mic_listening": "🎤 Говорите… нажмите микрофон для завершения",
     "mic_stop_title": "Остановить запись",
     "generating": "⏳ Модель думает…",
@@ -215,6 +217,8 @@ LANGS = {
     "pdf_empty": "[PDF has no text layer]", "clipped": "\n\n[...clipped, {n} chars total...]",
     "lang": "Language", "fb_helpful": "Helpful", "fb_bad": "Inaccurate", "fb_harm": "Harmful",
     "tts_speak": "Speak aloud", "stt_mic": "Voice input",
+    "tts_preparing": "⏳ Preparing speech… ({i}/{n})",
+    "tts_playing": "🔊 Playing {i}/{n} (click again — stop)",
     "mic_listening": "🎤 Listening… press mic to finish",
     "mic_stop_title": "Stop recording",
     "generating": "⏳ Thinking…",
@@ -904,14 +908,38 @@ async def main(page: ft.Page):
                 from voice import speak, is_playing, stop_playback  # type: ignore
             except ImportError:
                 show_e(tr("e_no_tts")); return
-            if is_playing():  # повторный клик — стоп
-                stop_playback(); status.value = ""; page.update(); return
-            status.value = "🔊…"; page.update()
+            if is_playing() or state.get("speaking"):  # повторный клик — стоп
+                try: stop_playback()
+                except Exception: pass
+                state["speaking"] = False
+                status.value = ""; status.color = th["muted"]; page.update(); return
+            state["speaking"] = True
+            loop = asyncio.get_running_loop()
+
+            def _show(txt: str, color: str | None = None):
+                def _apply():
+                    status.value = txt
+                    status.color = color or th["muted"]
+                    try: page.update()
+                    except Exception: pass
+                try: loop.call_soon_threadsafe(_apply)
+                except Exception: pass
+
+            def _progress(stage: str, i: int, total: int):
+                if stage == "prepare":
+                    _show(tr("tts_preparing", i=i, n=total), th["accent"])
+                else:
+                    _show(tr("tts_playing", i=i, n=total), "#EF5350")
+
+            _show(tr("tts_preparing", i=1, n=1), th["accent"])
             try:
-                await asyncio.get_running_loop().run_in_executor(
-                    None, speak, m.text, CUR["lang"])
-                status.value = ""; page.update()
+                import functools as _ft
+                await loop.run_in_executor(
+                    None, _ft.partial(speak, m.text, CUR["lang"], _progress))
             except Exception as ex: show_e(str(ex))
+            finally:
+                state["speaking"] = False
+                status.value = ""; status.color = th["muted"]; page.update()
         acts.controls.append(ft.IconButton(ft.Icons.VOLUME_UP_OUTLINED, icon_size=15,
                                            tooltip=tr("tts_speak"), on_click=speak_msg))
         if m.is_user:
