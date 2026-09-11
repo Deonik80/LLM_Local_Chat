@@ -676,6 +676,27 @@ async def main(page: ft.Page):
         try: _i18n.set_lang(CUR["lang"])
         except ValueError: pass
     _log.info("app started (lang=%s)", CUR["lang"])
+    try:  # глушим известный shutdown-шум Windows-проактора (рваные keep-alive
+        # сокеты при выгрузке/остановке сервера): это не ошибки программы
+        loop0 = asyncio.get_running_loop()
+        _prev_handler = loop0.get_exception_handler()
+
+        def _quiet_shutdown_noise(loop, ctx):
+            exc = ctx.get("exception")
+            if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)) and \
+                    "_call_connection_lost" in str(ctx.get("message", "")):
+                _log.debug("suppressed shutdown pipe noise: %r", exc)
+                return
+            if _prev_handler is not None:
+                try: _prev_handler(loop, ctx)
+                except Exception: pass
+            else:
+                try: loop.default_exception_handler(ctx)
+                except Exception: pass
+
+        loop0.set_exception_handler(_quiet_shutdown_noise)
+    except Exception:
+        pass
     UI = {}  # ссылки на контролы для apply_lang()
     page.title = tr("title"); page.bgcolor = th["bg"]
     try:  # восстановить геометрию окна с прошлого запуска
@@ -1996,12 +2017,12 @@ async def main(page: ft.Page):
         except Exception as ex:
             _log.warning("lms server stop failed: %s", ex)
 
-    def unload_via_cli(model_id: str | None = None):
+    def unload_via_cli(model_id: str | None = None) -> bool:
         """Fallback: выгрузка через `lms unload`, если HTTP API не сработал."""
         import shutil, subprocess
         lms = shutil.which("lms")
         if not lms:
-            return
+            return False
         # сначала точечно модель, потом всё остальное
         cmds = []
         if model_id:
@@ -2012,37 +2033,84 @@ async def main(page: ft.Page):
                 r = subprocess.run(cmd, timeout=30, capture_output=True, text=True)
                 _log.info("lms %s: %s", " ".join(cmd[1:]), (r.stdout or r.stderr or "ok").strip()[:200])
                 if r.returncode == 0:
-                    break
+                    return True
             except Exception as ex:
                 _log.warning("lms unload failed: %s", ex)
+        return False
+
+    def unload_sync_best_effort(model_id: str | None) -> bool:
+        """Синхронная выгрузка при закрытии: без event loop.
+
+        Flet при закрытии окна отменяет задачи и гасит loop — async unload
+        до сервера не доходит (см. CancelledError в логах). Синхронный
+        httpx + subprocess работают и после смерти loop.
+        """
+        if not model_id:
+            return False
+        try:  # 1) HTTP API синхронно (оба варианта payload)
+            import httpx as _hx
+            root = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
+            with _hx.Client(timeout=10.0) as c:
+                for payload in ({"instance_id": model_id}, {"model": model_id}):
+                    try:
+                        r = c.post(root + "/api/v1/models/unload", json=payload)
+                        if r.status_code < 400:
+                            _log.info("sync-unloaded model on exit: %s", model_id)
+                            return True
+                    except Exception:
+                        continue
+        except Exception as ex:
+            _log.warning("sync API unload failed: %s", ex)
+        try:  # 2) CLI — переживает смерть loop
+            return bool(unload_via_cli(model_id))
+        except Exception as ex:
+            _log.warning("sync CLI unload failed: %s", ex)
+        return False
 
     async def _exit_network():
-        """Выгрузка модели + стоп сервера. Вызывается под shield — переживает отмену задачи."""
-        try:
-            lm = state.get("loaded_model") or (model_dd.value or None)
-            if lm:
-                try:
-                    await asyncio.wait_for(client.unload_model(lm), timeout=15)
-                    _log.info("unloaded model on exit: %s", lm)
-                except Exception as ex:
-                    _log.warning("unload on exit via API failed: %s — пробую lms unload", ex)
-                    try:
-                        await asyncio.get_running_loop().run_in_executor(None, unload_via_cli, lm)
-                    except BaseException as ex2:
-                        _log.warning("unload via CLI failed: %s", ex2)
+        """Выгрузка модели + стоп сервера. Вызывается под shield — переживает отмену задачи.
+
+        Важно: шаги независимые — отмена/падение одного не пропускает
+        остальные (CLI через потоки работает даже при мёртвом loop).
+        """
+        lm = state.get("loaded_model") or (model_dd.value or None)
+        if lm and not state.get("exit_unloaded"):
+            try:  # 1) API unload (best effort)
+                await asyncio.wait_for(client.unload_model(lm), timeout=15)
+                _log.info("unloaded model on exit: %s", lm)
                 state["loaded_model"] = None
-        except BaseException as ex:
-            _log.warning("exit unload block failed: %s", ex)
-        # стоп сервера — СТРОГО после выгрузки, пока клиент ещё жив
+                state["exit_unloaded"] = True
+            except BaseException as ex:
+                _log.warning("unload on exit via API failed (%r) — пробую lms unload", ex)
+        if lm and not state.get("exit_unloaded"):
+            try:  # 2) CLI unload — отдельно, переживает смерть loop
+                if await asyncio.get_running_loop().run_in_executor(None, unload_via_cli, lm):
+                    state["exit_unloaded"] = True
+            except BaseException as ex2:
+                _log.warning("unload via CLI failed (%r)", ex2)
+        state["loaded_model"] = None
+        # клиент — ДО стопа сервера: закрываем keep-alive соединения чисто,
+        # иначе Windows-проактор орёт ConnectionResetError при смерти сервера
+        try: await client.close()
+        except BaseException: pass
         try:
             await asyncio.get_running_loop().run_in_executor(None, stop_lm_server)
         except BaseException as ex:
-            _log.warning("server stop on exit failed: %s", ex)
-        try: await client.close()
-        except BaseException: pass
+            _log.warning("server stop on exit failed (%r)", ex)
 
     async def on_app_close(e=None):
         _log.info("app closing")
+        try:  # 0) выгрузка модели — ПЕРВЫМ делом, синхронно: loop может умереть
+            lm0 = state.get("loaded_model") or (model_dd.value or None)
+            if lm0 and not state.get("exit_unloaded"):
+                try:
+                    state["exit_unloaded"] = bool(unload_sync_best_effort(lm0))
+                    if state["exit_unloaded"]:
+                        state["loaded_model"] = None
+                except Exception as ex:
+                    _log.warning("sync unload failed: %s", ex)
+        except Exception:
+            pass
         try:  # 1) геометрия окна — быстро и синхронно, первым делом
             try: settings["window_maximized"] = bool(page.window.maximized)
             except Exception: pass
