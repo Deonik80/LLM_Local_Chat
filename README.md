@@ -1,11 +1,23 @@
-# 🤖 LM Studio Chat
+<div align="center">
+  <h1 align="center">
+LM Studio Chat
+</h1>
+<div align="center">
 
----
+</div>
+  <p>
 🇺🇸 English | [🇷🇺 На русском языке](README.ru.md)
----
+  </p>
+</div>
+
 
 A chat client built with **Python + Flet** for interacting with local LLMs via the **LM Studio** API.
 ---
+<picture>
+  <div align="center">
+<img width="800" height="771" alt="1" src="https://github.com/user-attachments/assets/5b6f49d7-0c70-454c-9643-48bd3113d542" />
+    </div>
+</picture>
 
 ## ✨ Key Features
 
@@ -30,6 +42,10 @@ A chat client built with **Python + Flet** for interacting with local LLMs via t
 *   **Parsers:** `pypdf`, `python-docx`, `openpyxl`, `csv`
 *   **Asynchrony:** `asyncio`
 
+---
+<img width="800" height="771" alt="2" src="https://github.com/user-attachments/assets/04dc902d-fd87-4775-8ab1-872839137336" />
+<img width="800" height="771" alt="3" src="https://github.com/user-attachments/assets/b2968e48-ddc5-4987-9221-6129984ee63d" />
+<img width="800" height="771" alt="4" src="https://github.com/user-attachments/assets/71555ac3-05fd-464c-9532-fa66c9ed578a" />
 ---
 
 ## 🚀 Quick Start
