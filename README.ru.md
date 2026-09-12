@@ -6,7 +6,7 @@ LM Studio Chat
 
 </div>
   <p>
-[🇺🇸 English version](README.md) | 🇷🇺 На русском
+[English](./README.md) | [Русский](./README.ru.md)
     </p>
 </div>
 
