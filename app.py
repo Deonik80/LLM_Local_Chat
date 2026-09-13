@@ -1429,14 +1429,138 @@ async def main(page: ft.Page):
             save_chat(state["cid"], state["msgs"]); upd_tokens(); page.update()
         except Exception as ex: show_e(str(ex))
 
+    def md_to_html(src: str) -> str:
+        """Лёгкий markdown→HTML для экспорта (без внешних зависимостей).
+
+        Понимает: заголовки, bold/italic, код-блоки и инлайн-код,
+        списки (-/* и 1.), цитаты, hr, ссылки, абзацы.
+        """
+        import re as _re
+        esc = html_mod.escape(src or "")
+        # 1) фenced-код блоки -> плейсхолдеры
+        codes: list[str] = []
+
+        def _code_sub(m):
+            codes.append(f"<pre><code>{m.group(1)}</code></pre>")
+            return f"\x00CODE{len(codes) - 1}\x00"
+
+        esc = _re.sub(r"```(?:\w+)?\n?(.*?)```", _code_sub, esc, flags=_re.S)
+
+        def _inline(t: str) -> str:
+            t = _re.sub(r"`([^`]+?)`", r"<code>\1</code>", t)
+            t = _re.sub(r"!\[([^\]]*?)\]\([^)]*?\)", r"\1", t)  # картинки -> alt
+            t = _re.sub(r"\[([^\]]+?)\]\(([^)]+?)\)", r'<a href="\2">\1</a>', t)
+            t = _re.sub(r"\*\*([^*]+?)\*\*", r"<strong>\1</strong>", t)
+            t = _re.sub(r"(?<!\w)__([^_]+?)__(?!\w)", r"<strong>\1</strong>", t)
+            t = _re.sub(r"(?<!\w)\*([^*\n]+?)\*(?!\w)", r"<em>\1</em>", t)
+            t = _re.sub(r"(?<!\w)_([^_\n]+?)_(?!\w)", r"<em>\1</em>", t)
+            return t
+
+        out: list[str] = []
+        lines = esc.split("\n")
+        i, n = 0, len(lines)
+        while i < n:
+            ln = lines[i].rstrip()
+            s = ln.strip()
+            if not s:
+                i += 1
+                continue
+            if s.startswith("\x00CODE") and s.endswith("\x00"):
+                out.append(s)
+                i += 1
+                continue
+            mh = _re.match(r"^(#{1,6})\s+(.*)$", s)
+            if mh:
+                lvl = len(mh.group(1))
+                out.append(f"<h{lvl}>{_inline(mh.group(2))}</h{lvl}>")
+                i += 1
+                continue
+            if _re.match(r"^---+$", s) or _re.match(r"^\*\*\*+$", s):
+                out.append("<hr>")
+                i += 1
+                continue
+            if s.startswith("&gt;") or s.startswith(">"):
+                qs: list[str] = []
+                while i < n and (lines[i].strip().startswith("&gt;") or lines[i].strip().startswith(">")):
+                    qs.append(_re.sub(r"^(&gt;|&gt; |>|>)\s?", "", lines[i].strip()))
+                    i += 1
+                out.append(f"<blockquote>{'<br>'.join(_inline(q) for q in qs)}</blockquote>")
+                continue
+            if _re.match(r"^([-*•])\s+", s):
+                items: list[str] = []
+                while i < n and _re.match(r"^([-*•])\s+", lines[i].strip()):
+                    items.append(_inline(_re.sub(r"^([-*•])\s+", "", lines[i].strip())))
+                    i += 1
+                out.append("<ul>" + "".join(f"<li>{x}</li>" for x in items) + "</ul>")
+                continue
+            if _re.match(r"^\d+[.)]\s+", s):
+                items = []
+                while i < n and _re.match(r"^\d+[.)]\s+", lines[i].strip()):
+                    items.append(_inline(_re.sub(r"^\d+[.)]\s+", "", lines[i].strip())))
+                    i += 1
+                out.append("<ol>" + "".join(f"<li>{x}</li>" for x in items) + "</ol>")
+                continue
+            # обычный абзац: клеим до пустой строки
+            para: list[str] = [s]
+            i += 1
+            while i < n and lines[i].strip() and not _re.match(
+                    r"^(#{1,6}\s|---+$|\*\*\*+$|&gt;|>|([-*•])\s+|\d+[.)]\s+|```)", lines[i].strip()):
+                para.append(lines[i].strip())
+                i += 1
+            out.append(f"<p>{'<br>'.join(_inline(p) for p in para)}</p>")
+        html = "\n".join(out)
+        for idx, code in enumerate(codes):  # вернуть код-блоки
+            html = html.replace(f"\x00CODE{idx}\x00", code)
+        return html or "<p>…</p>"
+
     def export(fmt):  # #5
         ms = state["msgs"]
+        if not ms:
+            show_e(tr("e_no_msgs")); return
         if fmt == "md":
             out = "\n\n".join(f"**{tr('you') if m.is_user else tr('assistant')}** ({time.strftime('%H:%M', time.localtime(m.ts))}):\n{m.text}" for m in ms)
             (DATA / f"chat_{state['cid']}.md").write_text(out, "utf-8")
         elif fmt == "html":
-            body = "".join(f"<p><b>{tr('you') if m.is_user else tr('ai')}:</b> {html_mod.escape(m.text)}</p>" for m in ms)
-            (DATA / f"chat_{state['cid']}.html").write_text(f"<html><body>{body}</body></html>", "utf-8")
+            css = ("body{background:#121212;color:#e8e8e8;font-family:Segoe UI,Arial,sans-serif;"
+                   "max-width:900px;margin:0 auto;padding:24px}h1,h2,h3{color:#fff}"
+                   ".msg{border:1px solid #333;border-radius:12px;padding:12px 16px;margin:12px 0}"
+                   ".user{background:#1b3a5c}.assistant{background:#1e1e1e}"
+                   ".head{font-size:12px;color:#9e9e9e;margin-bottom:6px}"
+                   ".head b{color:#64b5f6}pre{background:#0d0d0d;border:1px solid #333;"
+                   "border-radius:8px;padding:10px;overflow-x:auto}"
+                   "code{background:#0d0d0d;padding:1px 5px;border-radius:4px}"
+                   "pre code{background:none;padding:0}a{color:#64b5f6}"
+                   "blockquote{border-left:3px solid #64b5f6;margin:8px 0;padding:4px 12px;color:#bdbdbd}"
+                   "hr{border:none;border-top:1px solid #444}li{margin:3px 0}"
+                   ".stats{font-size:11px;color:#757575;margin-top:6px}")
+            parts = []
+            for m in ms:
+                who = tr('you') if m.is_user else tr('assistant')
+                tstr = time.strftime("%H:%M %d.%m.%Y", time.localtime(m.ts or time.time()))
+                cls = "user" if m.is_user else "assistant"
+                stats = getattr(m, "gen_stats", None)
+                stats_h = f'<div class="stats">{html_mod.escape(stats)}</div>' if stats and not m.is_user else ""
+                parts.append(f'<div class="msg {cls}"><div class="head"><b>{html_mod.escape(who)}</b> {tstr}</div>'
+                             f"{md_to_html(m.text)}{stats_h}</div>")
+            page_h = (f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                      f"<title>Chat {state['cid']}</title><style>{css}</style></head>"
+                      f"<body>{''.join(parts)}</body></html>")
+            (DATA / f"chat_{state['cid']}.html").write_text(page_h, "utf-8")
+        elif fmt == "json":  # полный экспорт чата в data/ (раньше молча уходил в data/chats/)
+            def _dump(m):
+                try:
+                    return m.to_dict(include_b64=False)
+                except TypeError:
+                    d = m.to_dict()
+                    for a in d.get("attachments", []):
+                        if isinstance(a, dict):
+                            a.pop("b64", None)
+                    return d
+            payload = {"cid": state["cid"],
+                       "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                       "messages": [_dump(m) for m in ms]}
+            (DATA / f"chat_{state['cid']}.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
         elif fmt == "feedback":  # выгрузка оценок в JSONL для fine-tuning (без b64)
             def _nodump(m):
                 try: return m.to_dict(include_b64=False)
