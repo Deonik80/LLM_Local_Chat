@@ -4,10 +4,10 @@ LM Studio Chat
 </h1>
 <div align="center">
 
-</div>
-  <p>
-[English](./README.md) | [Русский](./README.ru.md)
-    </p>
+<div align="center">
+  
+[English](./README.md) | Русский
+
 </div>
 
 ---
