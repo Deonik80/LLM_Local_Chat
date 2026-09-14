@@ -4,11 +4,11 @@ LM Studio Chat
 </h1>
 <div align="center">
 
-</div>
-  <p>
-[English](./README.md) | [Русский](./README.ru.md)
- </p>
-</div>
+<div align="center">
+  
+English | [Русский](./README.ru.md)
+
+ </div>
 
 
 A chat client built with **Python + Flet** for interacting with local LLMs via the **LM Studio** API.
