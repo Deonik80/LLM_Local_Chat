@@ -84,6 +84,7 @@ class ChatMessage(BaseModel):
     rating: Optional[int] = Field(default=None, ge=1, le=5)
     feedback_type: Optional[FeedbackType] = None
     gen_stats: Optional[str] = None
+    stopped: bool = False
 
     @field_validator("ts", mode="before")
     @classmethod
@@ -123,4 +124,5 @@ class ChatMessage(BaseModel):
             text=d.get("text", ""), is_user=bool(d.get("is_user", False)),
             ts=d.get("ts") or time.time(), attachments=atts,
             variants=list(d.get("variants") or []),
-            rating=rating, feedback_type=fb, gen_stats=d.get("gen_stats"))
+            rating=rating, feedback_type=fb, gen_stats=d.get("gen_stats"),
+            stopped=bool(d.get("stopped", False)))

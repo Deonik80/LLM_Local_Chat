@@ -17,12 +17,13 @@
 from __future__ import annotations
 import asyncio, base64, csv, html as html_mod, io, json, mimetypes, os, sys, subprocess, time, uuid
 # ---------- auto-install недостающих парсеров документов ----------
-# Только лёгкие pure-python пакеты: pypdf / python-docx / openpyxl.
+# Только лёгкие пакеты: pypdf / python-docx / openpyxl / pillow.
 # Тяжёлые опциональные (PyAudio и т.п.) сюда не тянем, чтобы не ломать старт.
 _AUTO_DEPS = {
     "pypdf": "pypdf",
     "docx": "python-docx",
     "openpyxl": "openpyxl",
+    "PIL": "pillow",
 }
 
 def _ensure_doc_deps() -> None:
@@ -134,6 +135,19 @@ LANGS = {
     "tts_speak": "Озвучить", "stt_mic": "Голосовой ввод",
     "tts_preparing": "⏳ Готовлю озвучку… ({i}/{n})",
     "tts_playing": "🔊 Воспроизведение {i}/{n} (повторный клик — стоп)",
+    "continue": "Продолжить", "branch": "Ответить заново с этого места",
+    "empty_response": "Модель вернула пустой ответ",
+    "pin": "Закрепить", "unpin": "Открепить",
+    "e_no_pil": "Нет Pillow: pip install pillow",
+    "e_clipboard": "Буфер обмена недоступен: {e}",
+    "pasted_img": "Вставлено из буфера: {n}",
+    "select": "Выбрать для экспорта", "no_selection": "Ничего не выбрано: отметьте сообщения галочкой",
+    "m_exp_sel": "Экспорт выбранного ({n})", "exp_sel_hint": "В файл попадут только отмеченные галочкой сообщения.",
+    "handsfree": "Голосовой диалог", "handsfree_on": "🎙 Голосовой диалог включён — говорите",
+    "handsfree_stop": "Остановить голосовой диалог", "e_busy": "Дождитесь окончания генерации",
+    "server_down": "Сервер недоступен", "server_starting": "Запускаю сервер…",
+    "restart_server": "Перезапустить сервер", "e_no_lms": "lms не найден в PATH",
+    "autotitle_prompt": "Придумай короткое название (до 40 символов, без кавычек) для чата, который начался с вопроса: {t}",
     "mic_listening": "🎤 Говорите… нажмите микрофон для завершения",
     "mic_stop_title": "Остановить запись",
     "generating": "⏳ Модель думает…",
@@ -219,6 +233,19 @@ LANGS = {
     "tts_speak": "Speak aloud", "stt_mic": "Voice input",
     "tts_preparing": "⏳ Preparing speech… ({i}/{n})",
     "tts_playing": "🔊 Playing {i}/{n} (click again — stop)",
+    "continue": "Continue", "branch": "Retry from here",
+    "empty_response": "Model returned an empty response",
+    "pin": "Pin", "unpin": "Unpin",
+    "e_no_pil": "No Pillow: pip install pillow",
+    "e_clipboard": "Clipboard unavailable: {e}",
+    "pasted_img": "Pasted from clipboard: {n}",
+    "select": "Select for export", "no_selection": "Nothing selected: tick messages first",
+    "m_exp_sel": "Export selected ({n})", "exp_sel_hint": "Only ticked messages will be exported.",
+    "handsfree": "Voice dialogue", "handsfree_on": "🎙 Voice dialogue on — speak",
+    "handsfree_stop": "Stop voice dialogue", "e_busy": "Wait for generation to finish",
+    "server_down": "Server unreachable", "server_starting": "Starting server…",
+    "restart_server": "Restart server", "e_no_lms": "lms not found in PATH",
+    "autotitle_prompt": "Suggest a short title (max 40 chars, no quotes) for a chat that started with: {t}",
     "mic_listening": "🎤 Listening… press mic to finish",
     "mic_stop_title": "Stop recording",
     "generating": "⏳ Thinking…",
@@ -370,16 +397,19 @@ except ImportError:
         rating: Optional[int] = None  # 1..5 feedback (assistant only)
         feedback_type: Optional[str] = None  # helpful|inaccurate|harmful|other
         gen_stats: Optional[str] = None  # "N tok · X tok/s · Ys" — подпись под ответом
+        stopped: bool = False  # генерация прервана Stop — можно «Продолжить»
         def to_dict(self):
             return {"text": self.text, "is_user": self.is_user, "ts": self.ts,
                     "attachments": [a.to_dict() if isinstance(a, Attachment) else a for a in self.attachments],
                     "variants": self.variants, "rating": self.rating,
-                    "feedback_type": self.feedback_type, "gen_stats": self.gen_stats}
+                    "feedback_type": self.feedback_type, "gen_stats": self.gen_stats,
+                    "stopped": self.stopped}
         @staticmethod
         def from_dict(d):
             atts = [Attachment.from_dict(a) if isinstance(a, dict) and "path" in a else a for a in d.get("attachments", [])]
             return ChatMessage(d["text"], d["is_user"], d.get("ts", 0), atts, d.get("variants", []),
-                               d.get("rating"), d.get("feedback_type"), d.get("gen_stats"))
+                               d.get("rating"), d.get("feedback_type"), d.get("gen_stats"),
+                               bool(d.get("stopped", False)))
 
 class FileError(Exception): pass
 class StreamCancelled(Exception): pass
@@ -719,11 +749,12 @@ async def main(page: ft.Page):
         state = store.state  # единственное состояние; legacy-код работает с тем же объектом
         state.setdefault("loaded_model", None)
         state.setdefault("model_touched", False)
+        state.setdefault("selected", set())
     except (ImportError, NameError):
         store = None
         state = {"cid": None, "msgs": [], "files": [], "sending": False, "stick": True,
                  "conn_ok": False, "conn_custom": None, "chat_filter": "", "rated_only": False,
-                 "loaded_model": None, "model_touched": False}
+                 "loaded_model": None, "model_touched": False, "selected": set()}
 
     # --- виджеты ---
     chat_list = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -792,6 +823,8 @@ async def main(page: ft.Page):
     def refresh_sidebar():
         idx = load_index(); q = (search.value or "").lower()
         chat_list.controls.clear()
+        # №4: закреплённые — первыми
+        idx = sorted(idx, key=lambda c: (not c.get("pinned", False), -(c.get("ts", 0) or 0)))
         for c in idx:
             if q and q not in c["title"].lower(): continue
             cid = c["id"]
@@ -799,31 +832,80 @@ async def main(page: ft.Page):
             prev, n = chat_preview(cid)
             badge = ft.Container(content=ft.Text(str(n), size=10, color="white"),
                 bgcolor=th["accent"], border_radius=8, padding=ft.Padding.symmetric(vertical=2, horizontal=6)) if n else ft.Container()
+            pinned = bool(c.get("pinned", False))
             chat_list.controls.append(ft.Container(
                 bgcolor=th["hover"] if sel else None,
                 border_radius=S["radius"], padding=8,
                 border=ft.Border.all(1, th["accent"]) if sel else ft.Border.all(1, th["border"]),
                 on_click=lambda e, x=cid: open_chat(x),
                 content=ft.Row([
-                    ft.Column([ft.Text(c["title"][:28], size=13,
+                    ft.Column([ft.Text((("📌 " if pinned else "") + c["title"])[:30], size=13,
                                        weight=ft.FontWeight.BOLD if sel else ft.FontWeight.NORMAL,
                                        color=th["atc"]),
                                ft.Text(prev, size=11, color=th["muted"])], spacing=1, expand=True),
                     badge,
+                    ft.IconButton(ft.Icons.PUSH_PIN if pinned else ft.Icons.PUSH_PIN_OUTLINED,
+                        icon_size=14, tooltip=tr("unpin") if pinned else tr("pin"),
+                        icon_color=th["accent"] if pinned else None,
+                        on_click=lambda e, x=cid: toggle_pin(x)),
                     ft.IconButton(ft.Icons.EDIT_OUTLINED, icon_size=14, tooltip=tr("rename"),
                         on_click=lambda e, x=cid: rename_chat(x)),
                     ft.IconButton(ft.Icons.DELETE_OUTLINE, icon_size=14, tooltip=tr("delete"),
                         on_click=lambda e, x=cid: del_chat(x))],
                     vertical_alignment=ft.CrossAxisAlignment.CENTER)))
         page.update()
+    def toggle_pin(cid):
+        idx = load_index()
+        for c in idx:
+            if c["id"] == cid:
+                c["pinned"] = not c.get("pinned", False)
+        save_index(idx); refresh_sidebar()
+    async def auto_title(cid, first_text):
+        """№4: фоном попросить модель коротко назвать чат."""
+        await asyncio.sleep(0.5)
+        try:
+            if state.get("sending"):
+                return
+            prompt = tr("autotitle_prompt", t=(first_text or "")[:500])
+            c, *_ = await client.chat_stream([{"role": "user", "content": prompt}],
+                model_dd.value or DEFAULT_MODEL, settings, lambda k, t: None)
+            name = (c or "").strip().strip("\"'«»").split("\n")[0][:40].strip()
+            if not name:
+                return
+            idx = load_index()
+            changed = False
+            for cc in idx:
+                # не затирать ручное переименование: только если там ещё текст первого вопроса
+                if cc["id"] == cid and cc["title"][:40] == (first_text or "")[:40]:
+                    cc["title"] = name
+                    changed = True
+            if changed:
+                save_index(idx); refresh_sidebar()
+        except Exception as ex:
+            _log.warning("auto_title failed: %s", ex)
     def new_chat():
         cid = uuid.uuid4().hex[:8]
         idx = load_index(); idx.insert(0, {"id": cid, "title": tr("me"), "ts": time.time()})
         save_index(idx); open_chat(cid)
     def open_chat(cid):
         persist()
+        try: hide_e()  # не тащим красную плашку ошибки в другой чат
+        except Exception: pass
         state["cid"] = cid; state["msgs"] = load_chat(cid); state["files"] = []
+        # чистка legacy-пустышек: пустые ответы ассистента без вариантов (остатки
+        # старых Стопов/пустых генераций). Вопросы с вложениями не трогаем.
+        try:
+            before = len(state["msgs"])
+            state["msgs"] = [m for m in state["msgs"]
+                             if m.is_user or (m.text or "").strip()
+                             or [v for v in (m.variants or []) if (v or "").strip()]]
+            if len(state["msgs"]) != before:
+                save_chat(cid, state["msgs"])
+                _log.info("scrubbed %d empty assistant message(s) in %s", before - len(state["msgs"]), cid)
+        except Exception as ex:
+            _log.warning("scrub empty failed: %s", ex)
         state["chat_filter"] = ""; state["rated_only"] = False
+        state["selected"] = set()  # №8: сброс выбора при смене чата
         chat_box.controls.clear(); attach_row.controls.clear()
         for m in state["msgs"]: add_bubble(m)
         upd_tokens(); refresh_sidebar(); page.update()
@@ -922,6 +1004,30 @@ async def main(page: ft.Page):
         wrap = ft.Column(spacing=2, controls=[row])
         # действия
         acts = ft.Row(spacing=0)
+        sel_set = state.get("selected")  # №8: выбор сообщений для экспорта
+        if sel_set is None:
+            sel_set = state["selected"] = set()
+        _sel_on = id(m) in sel_set
+        sel_btn = ft.IconButton(ft.Icons.CHECK_BOX if _sel_on else ft.Icons.CHECK_BOX_OUTLINE_BLANK,
+            icon_size=15, tooltip=tr("select"),
+            icon_color=th["accent"] if _sel_on else None,
+            on_click=lambda e: _toggle_sel(e))
+
+        def _toggle_sel(e):
+            s = state.get("selected")
+            if s is None:
+                s = state["selected"] = set()
+            if id(m) in s:
+                s.discard(id(m))
+                sel_btn.icon = ft.Icons.CHECK_BOX_OUTLINE_BLANK
+                sel_btn.icon_color = None
+            else:
+                s.add(id(m))
+                sel_btn.icon = ft.Icons.CHECK_BOX
+                sel_btn.icon_color = th["accent"]
+            try: sel_btn.update()
+            except Exception: pass
+        acts.controls.append(sel_btn)
         async def copy(e): await clip.set(m.text); status.value = tr("copied"); page.update()
         acts.controls.append(ft.IconButton(ft.Icons.COPY, icon_size=15, tooltip=tr("copy"), on_click=copy))
         async def speak_msg(e):
@@ -969,11 +1075,22 @@ async def main(page: ft.Page):
                 state["msgs"].remove(m); chat_box.controls.remove(wrap); save_chat(state["cid"], state["msgs"]); upd_tokens(); page.update()
             async def dele(e):
                 state["msgs"].remove(m); chat_box.controls.remove(wrap); save_chat(state["cid"], state["msgs"]); upd_tokens(); page.update()
+            async def branch_u(e): await branch_from(_msg_index(m))  # №3: заново с этого места
             acts.controls += [ft.IconButton(ft.Icons.EDIT, icon_size=15, tooltip=tr("edit"), on_click=edit),
-                              ft.IconButton(ft.Icons.DELETE, icon_size=15, tooltip=tr("delete"), on_click=dele)]
+                              ft.IconButton(ft.Icons.DELETE, icon_size=15, tooltip=tr("delete"), on_click=dele),
+                              ft.IconButton(ft.Icons.CALL_SPLIT, icon_size=15, tooltip=tr("branch"), on_click=branch_u)]
         else:
             async def regen(e): await regenerate()
             acts.controls.append(ft.IconButton(ft.Icons.REFRESH, icon_size=15, tooltip=tr("retry"), on_click=regen))
+            try: _is_last = bool(state["msgs"]) and state["msgs"][-1] is m
+            except Exception: _is_last = False
+            if getattr(m, "stopped", False) and _is_last:  # №1: Продолжить прерванное
+                async def cont(e): await continue_gen(m)
+                acts.controls.append(ft.IconButton(ft.Icons.PLAY_ARROW, icon_size=15,
+                                                   tooltip=tr("continue"), on_click=cont))
+            async def branch_a(e): await branch_from(_msg_index(m))  # №3: ветвление
+            acts.controls.append(ft.IconButton(ft.Icons.CALL_SPLIT, icon_size=15,
+                                               tooltip=tr("branch"), on_click=branch_a))
             if "```" in (m.text or ""):  # копировать код из markdown-блоков
                 async def copy_code(e):
                     parts = (m.text or "").split("```")
@@ -1044,21 +1161,38 @@ async def main(page: ft.Page):
         try: page.update()
         except Exception: pass
 
+    def _filtered_msgs():
+        """Сообщения с учётом активных фильтров (поиск / только оценённые)."""
+        if _visible_messages is not None:
+            return _visible_messages(state["msgs"], state.get("chat_filter", ""),
+                                     state.get("rated_only", False))
+        q = (state.get("chat_filter") or "").lower()
+        rated_only = state.get("rated_only", False)
+        return [m for m in state["msgs"]
+                if not (rated_only and not (m.rating or m.feedback_type))
+                and not (q and q not in (m.text or "").lower())]
+
     def render_all():
         """Перерисовать чат с учётом фильтров (поиск / только оценённые)."""
         chat_box.controls.clear()
-        if _visible_messages is not None:
-            msgs = _visible_messages(state["msgs"], state.get("chat_filter", ""),
-                                     state.get("rated_only", False))
-        else:
-            q = (state.get("chat_filter") or "").lower()
-            rated_only = state.get("rated_only", False)
-            msgs = [m for m in state["msgs"]
-                    if not (rated_only and not (m.rating or m.feedback_type))
-                    and not (q and q not in (m.text or "").lower())]
-        for m in msgs:
+        for m in _filtered_msgs():
             add_bubble(m)
         page.update()
+
+    def heal_bubbles():
+        """Инвариант: число пузырей == числу видимых сообщений.
+
+        Если какой-то путь оставил осиротевший пузырь (или наоборот) —
+        тихо перерисовываем из state, UI всегда производно от данных.
+        """
+        try:
+            n_wraps = len(chat_box.controls)
+            n_msgs = len(_filtered_msgs())
+            if n_wraps != n_msgs:
+                _log.warning("bubble/state mismatch: %d wraps vs %d msgs — re-render", n_wraps, n_msgs)
+                render_all()
+        except Exception as ex:
+            _log.warning("heal_bubbles failed: %s", ex)
 
     async def _sync_ctx_max(sel: str, load_info: dict | None = None):
         """Подтянуть max ползунка Context Length с сервера (best effort)."""
@@ -1151,6 +1285,46 @@ async def main(page: ft.Page):
                              sel, list((load_info or {}).keys()) if isinstance(load_info, dict) else type(load_info))
         except Exception as ex:
             _log.warning("ctx max lookup failed: %s", ex)
+
+    async def health_loop():
+        """№10: тихий ping сервера каждые 30 c — точка статуса краснеет при падении."""
+        await asyncio.sleep(5)  # дать старту завершиться
+        while True:
+            await asyncio.sleep(30)
+            try:
+                try:
+                    await client.fetch_models()
+                    ok = True
+                except Exception:
+                    ok = False
+                try:
+                    if ok:
+                        if not state.get("conn_ok"):
+                            set_conn(True)
+                        else:
+                            dot.bgcolor = "#4CAF50"; dot.update()
+                    else:
+                        set_conn(False, tr("server_down"))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    async def restart_server(e=None):
+        """№10: перезапустить сервер LM Studio через lms и обновить модели."""
+        import shutil
+        lms = shutil.which("lms")
+        if not lms:
+            show_e(tr("e_no_lms")); return
+        status.value = tr("server_starting"); page.update()
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: __import__("subprocess").run(
+                    [lms, "server", "start"], timeout=30,
+                    capture_output=True, text=True))
+        except Exception as ex:
+            show_e(str(ex)); return
+        await load_models()
 
     async def load_models(e=None):
         try: models = await client.fetch_models()
@@ -1264,7 +1438,8 @@ async def main(page: ft.Page):
             actions_alignment=ft.MainAxisAlignment.END))
         return await fut
 
-    async def generate(_strip_images: bool = False):
+    async def generate(_strip_images: bool = False, _cont=None):
+        """Генерация ответа. _cont — прерванное сообщение для «Продолжить»."""
         _model_id = model_dd.value or DEFAULT_MODEL
         if not settings.get("send_images", True):
             _strip_images = True  # vision выключен в настройках — всегда text-only
@@ -1294,16 +1469,34 @@ async def main(page: ft.Page):
                             else tr("vision_auto"))
             status.update()
         am = ChatMessage(text="", is_user=False); state["msgs"].append(am)
-        md = add_bubble(am)
-        # --- визуализация ожидания: спиннер-статус + плейсхолдер в пузыре ---
-        md.value = tr("generating")
+        md = None
+        if _cont is None:
+            md = add_bubble(am)
+            # --- визуализация ожидания: спиннер-статус + плейсхолдер в пузыре ---
+            md.value = tr("generating")
+            disp = ""
+        else:  # «Продолжить»: дописываем в то же сообщение
+            am = _cont
+            am.stopped = False
+            chat_box.controls.clear()  # пересобрать ради живого md-хендла
+            for mm in state["msgs"]:
+                d = add_bubble(mm)
+                if mm is am:
+                    md = d
+            if md is None:
+                return
+            disp = am.text or ""
+            md.value = disp or tr("typing")
         status.value = tr("generating"); status.color = th["accent"]; page.update()
-        disp, buf, last = "", [], time.time()
+        buf, last = [], time.time()
         t0 = time.time()
+        _cid0 = state["cid"]  # чат могли переключить mid-stream — тогда тихо выходим
         _first_tok = True
         t_first: float | None = None
         def on_delta(kind, tok):
             nonlocal disp, last, _first_tok, t_first
+            if state["cid"] != _cid0 or am not in state["msgs"]:
+                return  # чат сменили — чужой стрим не трогаем
             if _first_tok:
                 _first_tok = False
                 t_first = time.time()
@@ -1312,16 +1505,44 @@ async def main(page: ft.Page):
                 except Exception: pass
             buf.append(tok if kind == "content" else f"`{tok}`")
             if time.time() - last > 0.15:  # #9 троттлинг по времени
-                disp += "".join(buf); buf.clear(); md.value = disp; md.update()
+                disp += "".join(buf); buf.clear()
+                try:
+                    md.value = disp; md.update()
+                except Exception:
+                    pass  # пузырь уже не на странице (смена чата) — копим в disp
                 if state.get("stick", True): scroll_end()
                 last = time.time()
         try:
             res = await client.chat_stream(api, model_dd.value or DEFAULT_MODEL, settings, on_delta)
+            if state["cid"] != _cid0 or am not in state["msgs"]:
+                _log.info("stream finished for inactive chat — dropped")
+                return
             content, reasoning = res[0], res[1]
             usage = res[2] if len(res) > 2 and isinstance(res[2], dict) else {}
             disp += "".join(buf)
             full = (f"> 💭 {tr('reasoning')}\n{reasoning}\n\n---\n" if reasoning and not content else "") + (content or reasoning or disp)
-            am.text = content or reasoning or disp; md.value = am.text
+            # в режиме «Продолжить» disp уже содержит старый хвост + дописку
+            if _cont is not None:
+                am.text = disp or am.text
+            else:
+                am.text = content or reasoning or disp
+            if not (am.text or "").strip():
+                # №3: модель вернула пустое — пузырь «…» не оставляем
+                try:
+                    state["msgs"].remove(am)
+                except ValueError:
+                    pass
+                try:
+                    chat_box.controls.pop()
+                except Exception:
+                    pass
+                save_chat(state["cid"], state["msgs"])
+                _log.warning("empty model response dropped (cont=%s)", _cont is not None)
+                status.value = tr("empty_response"); status.color = th["muted"]; page.update()
+                scroll_end()
+                return
+            am.stopped = False
+            md.value = am.text
             if not _strip_images and _has_img_f(api):
                 _vision_mark_good(_model_id)  # картинки прошли — модель с vision
             # --- статистика генерации: токены + скорость ---
@@ -1348,8 +1569,32 @@ async def main(page: ft.Page):
             status.value = am.gen_stats or ""; status.color = th["muted"]; page.update()
             scroll_end()
         except StreamCancelled:
-            am.text = md.value or ""; save_chat(state["cid"], state["msgs"]); status.value = tr("stopped"); status.color = th["muted"]; page.update()
-            scroll_end()
+            if state["cid"] != _cid0 or am not in state["msgs"]:
+                return  # устаревшая задача из прошлого чата
+            partial = (md.value or "").strip()
+            # плейсхолдеры ожидания — не текст, продолжать нечего
+            if partial in (tr("generating"), tr("typing"), "…", "...", ""):
+                partial = ""
+            if not partial:
+                # №1: пустое сообщение не оставляем — убираем пузырь совсем
+                try:
+                    state["msgs"].remove(am)
+                except ValueError:
+                    pass
+                render_all()
+                save_chat(state["cid"], state["msgs"])
+                _log.info("stop with no text — empty message dropped")
+                status.value = tr("stopped"); status.color = th["muted"]; page.update()
+                scroll_end()
+            else:
+                am.text = partial
+                am.stopped = True  # №1: можно «Продолжить»
+                save_chat(state["cid"], state["msgs"])
+                _log.info("stopped with %d chars — continue available", len(partial))
+                status.value = tr("stopped"); status.color = th["muted"]
+                render_all()  # перерисовать: у пузыря появится кнопка Продолжить
+                page.update()
+                scroll_end()
         except RuntimeError as ex:
             _log.error("generate failed: %s", ex)
             state["msgs"].pop(); chat_box.controls.pop()
@@ -1393,7 +1638,54 @@ async def main(page: ft.Page):
                     c["title"] = txt[:40]; save_index(load_index()); refresh_sidebar()
             save_chat(state["cid"], state["msgs"]); upd_tokens(); page.update()
             await generate()
-        finally: state["sending"] = False; set_sending_ui(False); page.update()
+            # №4: автоназвание чата моделью (фоном, не затирает ручное)
+            try:
+                cur_title = next((c["title"] for c in load_index() if c["id"] == state["cid"]), "")
+                if cur_title == txt[:40]:
+                    asyncio.create_task(auto_title(state["cid"], txt))
+            except Exception:
+                pass
+        finally: state["sending"] = False; set_sending_ui(False); heal_bubbles(); page.update()
+
+    def _msg_index(m) -> int:
+        for i, x in enumerate(state["msgs"]):
+            if x is m:
+                return i
+        return -1
+
+    async def continue_gen(m):
+        """№1: дописать прерванный Stop'ом ответ."""
+        if state["sending"]: return
+        if _msg_index(m) < 0: return
+        state["sending"] = True; set_sending_ui(True); page.update()
+        try:
+            await generate(_cont=m)
+        finally: state["sending"] = False; set_sending_ui(False); heal_bubbles(); page.update()
+
+    async def branch_from(idx: int):
+        """№3: ветвление — отбросить всё после msgs[idx] и сгенерировать заново.
+
+        Отброшенный хвост сохраняется как варианты (Variants) нового ответа.
+        Если ветка от ответа ассистента — сам ответ тоже уходит в хвост:
+        история должна заканчиваться вопросом пользователя, иначе модель
+        возвращает пустое (так и было на скрине).
+        """
+        if state["sending"]: return
+        if idx < 0 or idx >= len(state["msgs"]): return
+        cut = idx if not state["msgs"][idx].is_user else idx + 1
+        tail = state["msgs"][cut:]
+        tail_texts = [o.text for o in tail if not o.is_user and (o.text or "").strip()][:5]
+        del state["msgs"][cut:]
+        chat_box.controls.clear()
+        for m in state["msgs"]: add_bubble(m)
+        page.update(); state["sending"] = True; set_sending_ui(True)
+        try:
+            prev_n = len(state["msgs"])
+            await generate()
+            if len(state["msgs"]) > prev_n and tail_texts:
+                state["msgs"][-1].variants = tail_texts + state["msgs"][-1].variants[:5]
+                save_chat(state["cid"], state["msgs"])
+        finally: state["sending"] = False; set_sending_ui(False); heal_bubbles(); page.update()
 
     async def regenerate(e=None):
         if state["sending"]: return
@@ -1414,7 +1706,7 @@ async def main(page: ft.Page):
             if len(state["msgs"]) > prev_n and old and not old[-1].is_user:
                 state["msgs"][-1].variants = [o.text for o in old if not o.is_user and o.text][:5] + state["msgs"][-1].variants[:5]
                 save_chat(state["cid"], state["msgs"])
-        finally: state["sending"] = False; set_sending_ui(False); page.update()
+        finally: state["sending"] = False; set_sending_ui(False); heal_bubbles(); page.update()
 
     async def summarize(e=None):  # #3 сжатие
         if len(state["msgs"]) < 4: show_e(tr("e_few_msgs")); return
@@ -1514,12 +1806,15 @@ async def main(page: ft.Page):
         return html or "<p>…</p>"
 
     def export(fmt):  # #5
-        ms = state["msgs"]
+        export_msgs(state["msgs"], fmt, state["cid"])
+
+    def export_msgs(ms, fmt, tag):
+        """Экспорт произвольного набора сообщений (весь чат или выбранные №8)."""
         if not ms:
             show_e(tr("e_no_msgs")); return
         if fmt == "md":
             out = "\n\n".join(f"**{tr('you') if m.is_user else tr('assistant')}** ({time.strftime('%H:%M', time.localtime(m.ts))}):\n{m.text}" for m in ms)
-            (DATA / f"chat_{state['cid']}.md").write_text(out, "utf-8")
+            (DATA / f"chat_{tag}.md").write_text(out, "utf-8")
         elif fmt == "html":
             css = ("body{background:#121212;color:#e8e8e8;font-family:Segoe UI,Arial,sans-serif;"
                    "max-width:900px;margin:0 auto;padding:24px}h1,h2,h3{color:#fff}"
@@ -1543,9 +1838,9 @@ async def main(page: ft.Page):
                 parts.append(f'<div class="msg {cls}"><div class="head"><b>{html_mod.escape(who)}</b> {tstr}</div>'
                              f"{md_to_html(m.text)}{stats_h}</div>")
             page_h = (f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                      f"<title>Chat {state['cid']}</title><style>{css}</style></head>"
+                      f"<title>Chat {tag}</title><style>{css}</style></head>"
                       f"<body>{''.join(parts)}</body></html>")
-            (DATA / f"chat_{state['cid']}.html").write_text(page_h, "utf-8")
+            (DATA / f"chat_{tag}.html").write_text(page_h, "utf-8")
         elif fmt == "json":  # полный экспорт чата в data/ (раньше молча уходил в data/chats/)
             def _dump(m):
                 try:
@@ -1556,10 +1851,10 @@ async def main(page: ft.Page):
                         if isinstance(a, dict):
                             a.pop("b64", None)
                     return d
-            payload = {"cid": state["cid"],
+            payload = {"cid": tag,
                        "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                        "messages": [_dump(m) for m in ms]}
-            (DATA / f"chat_{state['cid']}.json").write_text(
+            (DATA / f"chat_{tag}.json").write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
         elif fmt == "feedback":  # выгрузка оценок в JSONL для fine-tuning (без b64)
             def _nodump(m):
@@ -1567,10 +1862,41 @@ async def main(page: ft.Page):
                 except TypeError: return m.to_dict()
             rows = [_nodump(m) for m in ms if not m.is_user and (m.rating or m.feedback_type)]
             if not rows: show_e(tr("e_no_msgs")); return
-            p = DATA / f"feedback_{state['cid']}.jsonl"
+            p = DATA / f"feedback_{tag}.jsonl"
             p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), "utf-8")
         else: save_chat(state["cid"], ms)
         status.value = tr("exported", f=fmt); page.update()
+
+    def export_selected(fmt):
+        """№8: экспорт только отмеченных галочкой сообщений."""
+        sel = [m for m in state["msgs"] if id(m) in (state.get("selected") or set())]
+        if not sel:
+            show_e(tr("no_selection")); return
+        export_msgs(sel, fmt, f"{state['cid']}-sel")
+
+    def export_selected_dlg(e=None):
+        sel = [m for m in state["msgs"] if id(m) in (state.get("selected") or set())]
+        if not sel:
+            show_e(tr("no_selection")); return
+
+        def _go(fmt):
+            def _h(e):
+                try: page.pop_dialog()
+                except Exception: pass
+                export_selected(fmt)
+            return _h
+
+        def _close(e):
+            try: page.pop_dialog()
+            except Exception: pass
+            page.update()
+        page.show_dialog(ft.AlertDialog(title=ft.Text(tr("m_exp_sel", n=len(sel))),
+            content=ft.Text(tr("exp_sel_hint")),
+            actions=[ft.TextButton("Markdown", on_click=_go("md")),
+                     ft.TextButton("HTML", on_click=_go("html")),
+                     ft.TextButton("JSON", on_click=_go("json")),
+                     ft.TextButton(tr("cancel"), on_click=_close)],
+            actions_alignment=ft.MainAxisAlignment.END))
 
     async def confirm_ctx_overflow(cur: int, cl: int) -> str:
         """Диалог при переполнении контекста: compress / continue / cancel."""
@@ -1623,6 +1949,38 @@ async def main(page: ft.Page):
         for f in fs_:
             if f.path and f.path not in state["files"]: state["files"].append(f.path)
         refresh_attach_row()
+
+    def paste_image():
+        """№5: вставить картинку из буфера обмена (скриншот по Ctrl+V)."""
+        try:
+            from PIL import ImageGrab  # type: ignore
+        except ImportError:
+            show_e(tr("e_no_pil")); return
+        try:
+            img = ImageGrab.grabclipboard()
+        except Exception as ex:
+            show_e(tr("e_clipboard", e=ex)); return
+        if img is None:  # в буфере текст/пусто — обычный Ctrl+V отработает сам
+            return
+        try:
+            if isinstance(img, list):  # имена файлов из проводника
+                added = 0
+                for p in img:
+                    if isinstance(p, str) and Path(p).is_file() and str(p) not in state["files"]:
+                        state["files"].append(str(p)); added += 1
+                if added:
+                    refresh_attach_row()
+                return
+            img = img.convert("RGB")
+            ATTACH.mkdir(parents=True, exist_ok=True)
+            p = str(ATTACH / f"clip_{int(time.time() * 1000)}.png")
+            img.save(p, "PNG")
+            if p not in state["files"]:
+                state["files"].append(p)
+            refresh_attach_row()
+            status.value = tr("pasted_img", n=Path(p).name); page.update()
+        except Exception as ex:
+            show_e(tr("e_clipboard", e=ex))
 
     def refresh_attach_row():
         """Превью вложений: миниатюры картинок, чипы файлов, у каждого — крестик удаления."""
@@ -1901,6 +2259,9 @@ async def main(page: ft.Page):
             ft.PopupMenuItem(tr("m_exp_html"), icon=ft.Icons.SHARE_OUTLINED, on_click=lambda e: export("html")),
             ft.PopupMenuItem(tr("m_exp_json"), icon=ft.Icons.SHARE_OUTLINED, on_click=lambda e: export("json")),
             ft.PopupMenuItem(tr("m_exp_fb"), icon=ft.Icons.FEEDBACK_OUTLINED, on_click=lambda e: export("feedback")),
+            ft.PopupMenuItem(tr("m_exp_sel", n=len(state.get("selected") or set())), icon=ft.Icons.CHECKLIST_OUTLINED, on_click=export_selected_dlg),
+            ft.PopupMenuItem(tr("handsfree"), icon=ft.Icons.HEARING_OUTLINED, on_click=lambda e: toggle_handsfree(e)),
+            ft.PopupMenuItem(tr("restart_server"), icon=ft.Icons.DNS_OUTLINED, on_click=restart_server),
             ft.PopupMenuItem(tr("m_theme"), icon=ft.Icons.BRIGHTNESS_6_OUTLINED, on_click=switch_theme),
             ft.PopupMenuItem(tr("m_font_up"), icon=ft.Icons.TEXT_INCREASE_OUTLINED, on_click=lambda e: font_pm(0.1)),
             ft.PopupMenuItem(tr("m_font_down"), icon=ft.Icons.TEXT_DECREASE_OUTLINED, on_click=lambda e: font_pm(-0.1))]
@@ -2072,6 +2433,10 @@ async def main(page: ft.Page):
         client.cancel()
         status.value = tr("stopped"); page.update()
     async def do_listen(e=None):
+        if state.get("handsfree"):  # клик по микрофону в hands-free = выключить режим
+            toggle_handsfree(); return
+        try: hide_e()  # гасим прошлую ошибку распознавания
+        except Exception: pass
         try:
             from voice import listen  # type: ignore
         except ImportError:
@@ -2102,6 +2467,73 @@ async def main(page: ft.Page):
     UI["mic"] = ft.IconButton(ft.Icons.MIC_OUTLINED, tooltip=tr("stt_mic"), on_click=do_listen)
     btn_stop = ft.IconButton(ft.Icons.STOP_CIRCLE_OUTLINED, tooltip=tr("stop"), on_click=do_stop,
         visible=False, style=ft.ButtonStyle(color="#EF5350"))
+
+    async def handsfree_loop():
+        """№9: голосовой диалог без рук: слушаю → отправляю → озвучиваю → по кругу."""
+        try:
+            from voice import listen, speak, stop_playback  # type: ignore
+        except ImportError:
+            show_e(tr("e_no_stt")); state["handsfree"] = False; return
+        mic = UI["mic"]
+        try:
+            mic.icon = ft.Icons.MIC_ROUNDED; mic.bgcolor = "#EF5350"; mic.icon_color = "white"
+            mic.tooltip = tr("handsfree_stop"); mic.update()
+        except Exception: pass
+        loop = asyncio.get_running_loop()
+        lang = "ru-RU" if CUR["lang"] == "ru" else "en-US"
+        status.value = tr("handsfree_on"); status.color = "#EF5350"; page.update()
+        try:
+            while state.get("handsfree"):
+                status.value = tr("mic_listening"); status.color = "#EF5350"; page.update()
+                try:
+                    text = await loop.run_in_executor(None, listen, lang)
+                except Exception as ex:
+                    if state.get("handsfree"):
+                        show_e(str(ex))
+                    break
+                if not state.get("handsfree"):
+                    break
+                text = (text or "").strip()
+                if not text:
+                    continue
+                inp.value = text; inp.update(); on_inp(None)
+                await send()  # генерация + автоназвание как обычно
+                if not state.get("handsfree"):
+                    break
+                last = next((m for m in reversed(state["msgs"]) if not m.is_user and m.text), None)
+                if last is None:
+                    continue
+                status.value = tr("tts_playing", i=1, n=1); page.update()
+                try:
+                    await loop.run_in_executor(None, speak, last.text, CUR["lang"])
+                except Exception as ex:
+                    show_e(str(ex)); break
+        finally:
+            state["handsfree"] = False
+            try:
+                mic.icon = ft.Icons.MIC_OUTLINED; mic.bgcolor = None; mic.icon_color = None
+                mic.tooltip = tr("stt_mic"); mic.update()
+            except Exception: pass
+            status.value = ""; status.color = th["muted"]; page.update()
+
+    def toggle_handsfree(e=None):
+        if state.get("handsfree"):  # выключить: флаг + стоп всего звучащего/генерируемого
+            state["handsfree"] = False
+            try:
+                from voice import stop_playback  # type: ignore
+                stop_playback()
+            except Exception: pass
+            try: client.cancel()
+            except Exception: pass
+            status.value = ""; page.update()
+        else:
+            if state.get("sending"):
+                show_e(tr("e_busy")); return
+            try: hide_e()
+            except Exception: pass
+            state["handsfree"] = True
+            try: asyncio.get_running_loop().create_task(handsfree_loop())
+            except Exception as ex: show_e(str(ex)); state["handsfree"] = False
     dock = ft.Container(bgcolor=th["input_bg"], border_radius=S["radius"] + 4, padding=8,
         border=ft.Border.all(1, th["border"]),
         shadow=ft.BoxShadow(blur_radius=12, color=th["shadow"], offset=ft.Offset(0, -2)),
@@ -2125,6 +2557,8 @@ async def main(page: ft.Page):
             new_chat()
         elif e.ctrl and k == "f":
             find_in_chat()
+        elif e.ctrl and k == "v":
+            paste_image()  # №5: картинка из буфера; текст вставится сам
         elif k == "escape" and state.get("sending"):
             do_stop()
     page.on_keyboard_event = on_keyboard
@@ -2267,6 +2701,8 @@ async def main(page: ft.Page):
     if not idx: new_chat()
     else: open_chat(idx[0]["id"])
     refresh_sidebar(); refresh_profiles(); await load_models()
+    try: asyncio.get_running_loop().create_task(health_loop())  # №10: мониторинг сервера
+    except Exception as ex: _log.warning("health monitor not started: %s", ex)
 
 if __name__ == "__main__":
     ft.run(main)

@@ -4,10 +4,10 @@ LM Studio Chat
 </h1>
 <div align="center">
 
-</div>
-  <p>
-[English](./README.md) | [Русский](./README.ru.md)
- </p>
+<div align="center">
+
+English | [Русский](./README.ru.md)
+
 </div>
 
 
@@ -22,14 +22,16 @@ A chat client built with **Python + Flet** for interacting with local LLMs via t
 ## ✨ Key Features
 
 *   **📄 Local Document Reading (RAG-ready):** Automatic text extraction from `.pdf`, `.docx`, `.xlsx`, `.csv`, `.txt`, `.py`, and `.md` files with smart context limit management.
-*   **🖼️ Multimodality Support (Vision):** Attach images (`png`, `jpg`, `webp`, `gif`) with auto-detection of whether the current model supports vision (includes automatic fallback to text mode on HTTP 400 errors).
-*   **🎭 Preset & Profile System:** Quickly switch between system prompts (Translator, Code Review, etc.). Create complete profiles that link a specific model, prompt, temperature, `top_p`, `seed`, and `context_length` in a single click.
+*   **🖼️ Multimodality Support (Vision):** Attach images (`png`, `jpg`, `webp`, `gif`) with auto-detection of whether the current model supports vision (includes automatic fallback to text mode on HTTP 400 errors). Paste screenshots straight from the clipboard with `Ctrl + V`.
+*   **🎭 Preset & Profile System:** Quickly switch between system prompts (Translator, Code Review, etc.). Create complete profiles that link a specific model, prompt, temperature, `seed`, and `context_length` in a single click.
 *   **📦 Project Environment Loading:** Ability to load `requirements.txt` and `.env` files directly into the model's system context for precise development.
-*   **🔄 Generation Management:** Streaming output with throttling for smoothness, along with an immediate stop button. Visible generation status (`Thinking…` → `Typing…`) in the bubble and status bar. Support for regenerating responses and storing alternative text options (Variants).
-*   **📈 Token Control & Compression:** Visual progress bar tracking context utilization. Automatic or manual dialogue history compression (Summarization) when context limits are reached.
-*   **🗣️ Voice Interface:** Voice message input (STT) with a red recording indicator on the mic button, and assistant response read-aloud (TTS, `edge-tts` online or `pyttsx3` offline, in-app playback).
-*   **📦 Auto-dependencies:** On startup the app checks `pypdf` / `python-docx` / `openpyxl` and installs anything missing with the same Python interpreter; `run_app.bat` additionally runs `pip install -r requirements.txt`.
-*   **📊 Feedback Loop & Export:** Rate messages to create a feedback loop with log exporting in `JSONL` format for subsequent fine-tuning. Export dialogues to `Markdown` and `HTML`.
+*   **🔄 Generation Management:** Streaming output with throttling for smoothness, along with an immediate stop button. Visible generation status (`Thinking…` → `Typing…`) in the bubble and status bar. Interrupted answers can be resumed with **Continue**; any message can start a new **branch** (the discarded tail is kept as Variants). Support for regenerating responses and storing alternative text options (Variants).
+*   **📈 Token Control & Compression:** Visual progress bar tracking context utilization. Every answer shows its cost (`⚡ N tok · X tok/s · Ys`). Automatic or manual dialogue history compression (Summarization) when context limits are reached. `Context Length` is a slider whose maximum is pulled from the loaded model.
+*   **📌 Sidebar: Pins & Auto-titles:** Pin important chats to the top; the model suggests a short title for new chats in the background (manual renames are never overwritten).
+*   **🗣️ Voice Interface:** Voice message input (STT) with a red recording indicator on the mic button, assistant response read-aloud (TTS, `edge-tts` online or `pyttsx3` offline, in-app playback, long answers are synthesized in chunks with progress), and a hands-free dialogue mode (listen → answer → speak, in a loop).
+*   **🖥️ Server Handling:** On startup the app adopts the model already loaded on the server instead of loading a second one; a background health check watches the server (red/green status dot) with one-click restart via `lms`.
+*   **📦 Auto-dependencies:** On startup the app checks `pypdf` / `python-docx` / `openpyxl` / `pillow` and installs anything missing with the same Python interpreter; `run_app.bat` additionally runs `pip install -r requirements.txt`.
+*   **📊 Feedback Loop & Export:** Rate messages to create a feedback loop with log exporting in `JSONL` format for subsequent fine-tuning. Export dialogues (whole chat or ticked messages only) to `Markdown`, `HTML`, and `JSON`.
 *   **🌐 Localization & Themes:** Full support for English and Russian (i18n), featuring adaptive Dark and Light UI themes.
 *   **🧹 Clean Exit:** Automatically unloads the model from LM Studio's memory when the application closes to save GPU resources.
 
@@ -39,7 +41,7 @@ A chat client built with **Python + Flet** for interacting with local LLMs via t
 
 *   **UI Framework:** [Flet](https://flet.dev) (Flutter for Python)
 *   **Network Client:** Async HTTP requests via [Httpx](https://python-httpx.org)
-*   **Parsers:** `pypdf`, `python-docx`, `openpyxl`, `csv`
+*   **Parsers:** `pypdf`, `python-docx`, `openpyxl`, `csv`, `pillow`
 *   **Asynchrony:** `asyncio`
 
 ---
@@ -71,7 +73,7 @@ pip install -r requirements.txt
 
 # Or manually:
 # Base
-pip install "flet==0.86.5" httpx pydantic
+pip install "flet==0.86.5" httpx pydantic pillow
 
 # For reading PDF, Word, and Excel documents
 pip install pypdf python-docx openpyxl
@@ -79,7 +81,7 @@ pip install pypdf python-docx openpyxl
 # For voice input and text-to-speech (optional)
 pip install edge-tts pyttsx3 pygame SpeechRecognition PyAudio
 ```
-*(Note: The Flet version in the code is strictly locked to the 0.86.5 architecture. Missing document parsers (`pypdf`, `python-docx`, `openpyxl`) are also auto-installed on app startup.)*
+*(Note: The Flet version in the code is strictly locked to the 0.86.5 architecture. Missing helpers (`pypdf`, `python-docx`, `openpyxl`, `pillow`) are also auto-installed on app startup.)*
 
 ### Environment Variables (Optional)
 
@@ -89,6 +91,7 @@ You can override the default settings using environment variables or a `.env` fi
 *   `REQUEST_TIMEOUT` — Request timeout in seconds (default: `180`).
 *   `CONTEXT_LENGTH` — Default context size (default: `8192`).
 *   `MAX_IMAGE_MB` / `MAX_TEXT_MB` — Size limits for attachments.
+*   `LOG_LEVEL` / `LOG_KEEP` — Log verbosity and how many per-run log files to keep (default: `INFO` / `20`).
 
 ### Running the Application
 
@@ -119,6 +122,7 @@ After the first launch, the application will create a `data/` directory in the r
 *   `Shift + Enter` — Newline in the input field.
 *   `Ctrl + K` — Create a new empty chat.
 *   `Ctrl + F` — Open full-text search within the current dialogue.
+*   `Ctrl + V` — Paste an image from the clipboard as an attachment.
 *   `Escape` — Interrupt the current response generation (Stop).
 
 ---

@@ -4,6 +4,7 @@ pydantic>=2
 pypdf
 python-docx
 openpyxl
+pillow
 edge-tts
 pyttsx3
 pygame
