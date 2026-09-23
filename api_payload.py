@@ -23,14 +23,45 @@ token budget, and ChatMessage -> OpenAI-style message mapping
 File-text extraction is injected (lives in app.py) to avoid a cycle.
 """
 from __future__ import annotations
+import re
 from pathlib import Path
 from typing import Callable
 
 from models import Attachment, ChatMessage
 
+# не-ASCII (кириллица, иероглифы и др.) токенизируется плотнее, чем латиница
+_NON_ASCII_RE = re.compile(r"[^\x00-\x7f]+")
 
-def estimate_tokens(s: str) -> int:  # грубая оценка
-    return max(1, len(s or "") // 4)
+
+def estimate_tokens(s: str) -> int:
+    """Грубая, но смещённая под реальность оценка числа токенов.
+
+    ASCII ~4 символа/токен; не-ASCII ~2 символа/токена (кириллица в
+    мультиязычных токенизаторах занимает больше токенов на символ, чем
+    считает len//4 — прогресс-бар контекста «врал» в безопасную сторону
+    только для английского). Занижение дороже завышения, поэтому
+    не-ASCII считаем консервативно.
+    """
+    s = s or ""
+    if not s:
+        return 1
+    non_ascii = sum(len(m.group(0)) for m in _NON_ASCII_RE.finditer(s))
+    ascii_n = len(s) - non_ascii
+    return max(1, (ascii_n + 3) // 4 + (non_ascii + 1) // 2)
+
+
+# Ключи окружения, значения которых нельзя отдавать модели (утечка секретов
+# в system prompt -> экспорт/логи/история).
+_SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PWD",
+                   "CREDENTIAL", "AUTH", "PRIVATE", "SALT", "SIGNATURE")
+
+
+def mask_env_value(key: str, value: str) -> str:
+    """Mask values of secret-like env keys; pass everything else through."""
+    up = (key or "").upper()
+    if any(m in up for m in _SECRET_MARKERS):
+        return "***"
+    return value
 
 
 class APIPayloadBuilder:
@@ -44,14 +75,19 @@ class APIPayloadBuilder:
     # -- system prompt --
     @staticmethod
     def format_env_block(settings: dict) -> str:
-        """System Context block from requirements.txt / .env stored in settings."""
+        """System Context block from requirements.txt / .env stored in settings.
+
+        Secret-like env values (API_KEY, *TOKEN*, PASSWORD, ...) are masked
+        so they never reach the model prompt, logs or exports.
+        """
         req = (settings.get("env_requirements") or "").strip()
         env_vars = settings.get("env_vars") or {}
         if not req and not env_vars: return ""
         parts = ["[System Context: Environment]"]
         if req: parts.append(f"requirements:\n{req[:8000]}")
         if env_vars:
-            parts.append("environment variables:\n" + "\n".join(f"- {k}={v}" for k, v in env_vars.items()))
+            parts.append("environment variables:\n" + "\n".join(
+                f"- {k}={mask_env_value(k, v)}" for k, v in env_vars.items()))
             parts.append("Model must respect these library versions and env vars.")
         return "\n".join(parts)
 
@@ -64,18 +100,21 @@ class APIPayloadBuilder:
     def trim(self, messages: list[ChatMessage], context_tokens: int = 0) -> list[ChatMessage]:
         hist = messages[-self.max_ctx_messages:]
         if context_tokens and context_tokens > 0:
-            # trim oldest while estimated history tokens exceed the limit (keep at least last 2)
-            while len(hist) > 2 and sum(self.estimate(m.text or "") for m in hist) > context_tokens:
+            # выкидываем самые старые, пока сумма не влезет (минимум 2 сообщения);
+            # считаем накопительно, а не пересчитываем sum() на каждой итерации
+            total = sum(self.estimate(m.text or "") for m in hist)
+            while len(hist) > 2 and total > context_tokens:
+                total -= self.estimate(hist[0].text or "")
                 hist = hist[1:]
         return hist
 
     def build(self, messages: list[ChatMessage], system: str, context_tokens: int = 0,
               strip_images: bool = False) -> list[dict]:
-        api = []
+        api: list[dict] = []  # content: str у system/assistant, list[dict] у user с картинками
         if (system or "").strip(): api.append({"role": "system", "content": system.strip()})
         for m in self.trim(messages, context_tokens):
             if m.is_user:
-                parts = [{"type": "text", "text": m.text}]
+                parts: list[dict] = [{"type": "text", "text": m.text}]  # text|image_url элементы
                 for a in m.attachments:
                     if isinstance(a, Attachment) and a.mime and a.mime.startswith("image/"):
                         if strip_images:

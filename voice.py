@@ -26,7 +26,18 @@ from __future__ import annotations
 import re
 
 
-class VoiceError(Exception): pass
+class VoiceError(Exception):
+    """Voice failure with an i18n code so the UI can translate it.
+
+    ``code`` — ключ из locales/<lang>.json; ``params`` — подстановки в шаблон.
+    Строка исключения остаётся английской (для логов) на случай, если
+    вызывающий код не умеет переводить.
+    """
+
+    def __init__(self, message: str, code: str = "", **params):
+        super().__init__(message)
+        self.code = code
+        self.params = params
 
 
 def clean_for_speech(text: str) -> str:
@@ -71,18 +82,19 @@ def listen(lang: str = "ru-RU", timeout: int = 8) -> str:
     try:
         import speech_recognition as sr
     except ImportError:
-        raise VoiceError("Нет пакета SpeechRecognition: pip install SpeechRecognition PyAudio")
+        raise VoiceError("No SpeechRecognition package: pip install SpeechRecognition PyAudio",
+                         "e_no_stt")
     try:
         r = sr.Recognizer()
         with sr.Microphone() as src:
             r.adjust_for_ambient_noise(src, duration=0.5)
             audio = r.listen(src, timeout=timeout, phrase_time_limit=30)
     except Exception as e:
-        raise VoiceError(f"Микрофон недоступен: {e}")
+        raise VoiceError(f"Microphone unavailable: {e}", "e_voice_mic", e=e) from e
     try:
         return r.recognize_google(audio, language=lang)
     except Exception as e:
-        raise VoiceError(f"Не распознано: {e}")
+        raise VoiceError(f"Not recognized: {e}", "e_voice_recognized", e=e) from e
 
 
 _PG_OK = False  # pygame mixer инициализирован
@@ -204,7 +216,7 @@ def speak(text: str, lang: str = "ru", on_progress=None):
     _STOP_PLAY = False
     clean = clean_for_speech(text)
     if not clean:
-        raise VoiceError("Нечего озвучивать")
+        raise VoiceError("Nothing to speak", "e_voice_empty")
     chunks = split_for_speech(clean)
     n = len(chunks)
     # 1) edge-tts (качественно, нужен интернет): mp3 в data/tts + проигрывание
@@ -240,16 +252,17 @@ def speak(text: str, lang: str = "ru", on_progress=None):
     except ImportError:
         pass
     except Exception as e:
-        raise VoiceError(f"edge-tts: {e}")
+        raise VoiceError(f"edge-tts: {e}", "e_voice_tts", e=f"edge-tts: {e}") from e
     # 2) pyttsx3 (офлайн, системный голос)
     try:
         import pyttsx3 as _px
     except ImportError:
-        raise VoiceError("Нет TTS-движка: pip install edge-tts (или pyttsx3 для офлайна)")
+        raise VoiceError("No TTS engine: pip install edge-tts (or pyttsx3 for offline)",
+                         "e_no_tts")
     try:
         eng = _px.init()
         eng.setProperty("rate", 175)
         eng.say(clean)
         eng.runAndWait()
     except Exception as e:
-        raise VoiceError(f"pyttsx3: {e}")
+        raise VoiceError(f"pyttsx3: {e}", "e_voice_tts", e=f"pyttsx3: {e}") from e

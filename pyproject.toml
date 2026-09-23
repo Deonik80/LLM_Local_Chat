@@ -1,0 +1,60 @@
+[project]
+name = "llm-local-chat"
+version = "1.0.0"
+description = "LM Studio Chat — Flet-клиент для локальных LLM (LM Studio API)"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+    "flet==0.86.5",
+    "httpx>=0.27",
+    "pydantic>=2",
+]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+extend-exclude = ["data", "__pycache__"]
+
+[tool.ruff.lint]
+# E9 — синтаксис, F — pyflakes (undefined-name, unused, redefinition).
+# Остальные семейства (S/BLE/UP...) включаются точечно по мере чистки легаси.
+select = ["E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
+
+[tool.mypy]
+# Только чистые модули (без flet-UI): app.py покрывается import-smoke и ручной проверкой.
+files = ["chat_store.py", "repositories.py", "fsutil.py", "api_payload.py", "voice.py", "models.py"]
+# таргет 3.12: современный mypy не принимает 3.9, а стабы numpy 2.x (транзитивно
+# через pygame в voice.py) не парсятся ниже 3.12. Совместимость с 3.9/3.10
+# держат ruff (target-version=py39) и CI-матрица pytest 3.9–3.13.
+python_version = "3.12"
+check_untyped_defs = true
+# без warn_unused_ignores: voice.py содержит os.startfile-игнор, он «unused»
+# на Windows (локально) и нужен на linux (CI)
+ignore_missing_imports = true
+
+[tool.coverage.run]
+# app.py (flet-UI) вне покрытия — импорт требует data/, чистая логика вынесена в chat_store/repositories.
+source = ["chat_store", "repositories", "fsutil", "api_payload", "voice", "models"]
+omit = ["app.py", "tests/*"]
+
+[tool.coverage.report]
+skip_empty = true
+
+[tool.pylint.messages_control]
+# Совместимость со старым workflow; основной линтер — ruff (см. CI).
+disable = [
+    "raw-checker-failed",
+    "bad-inline-option",
+    "locally-disabled",
+    "file-ignored",
+    "suppressed-message",
+    "useless-suppression",
+    "deprecated-pragma",
+    "anomalous-backslash-in-string",
+]
+max-line-length = 120

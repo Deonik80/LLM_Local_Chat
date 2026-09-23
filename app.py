@@ -15,10 +15,12 @@
 
 # LM Studio Chat
 from __future__ import annotations
-import asyncio, base64, csv, html as html_mod, io, json, mimetypes, os, sys, subprocess, time, uuid
-# ---------- auto-install недостающих парсеров документов ----------
-# Только лёгкие пакеты: pypdf / python-docx / openpyxl / pillow.
-# Тяжёлые опциональные (PyAudio и т.п.) сюда не тянем, чтобы не ломать старт.
+import asyncio, base64, csv, html as html_mod, json, mimetypes, os, time
+# ---------- опциональные парсеры документов ----------
+# pypdf / python-docx / openpyxl / pillow — опциональны: без них приложение
+# стартует, а попытка прочитать такой файл падает с понятной подсказкой.
+# Никаких авто-pip-установок в рантайме: окружение не мутируем (сеть,
+# воспроизводимость, supply-chain).
 _AUTO_DEPS = {
     "pypdf": "pypdf",
     "docx": "python-docx",
@@ -26,290 +28,63 @@ _AUTO_DEPS = {
     "PIL": "pillow",
 }
 
-def _ensure_doc_deps() -> None:
+def _check_doc_deps() -> None:
     missing: list[str] = []
     for mod, pip_name in _AUTO_DEPS.items():
         try:
             __import__(mod)
         except ImportError:
             missing.append(pip_name)
-    if not missing:
-        return
-    print(f"[deps] отсутствуют {missing}, устанавливаю: pip install {' '.join(missing)} ...")
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", *missing],
-            check=False, timeout=180,
-        )
-    except Exception as ex:
-        print(f"[deps] автоустановка не удалась: {ex}")
-        return
-    # повторная проверка — что реально встало
-    still = []
-    for mod, pip_name in _AUTO_DEPS.items():
-        try:
-            __import__(mod)
-        except ImportError:
-            if pip_name in missing:
-                still.append(pip_name)
-    if still:
-        print(f"[deps] не удалось установить: {still}. Выполните вручную: pip install {' '.join(still)}")
+    if missing:
+        print(f"[deps] optional document parsers missing: {missing} — "
+              f"PDF/Word/Excel attachments will be unavailable. "
+              f"Install with: pip install {' '.join(missing)}")
 
-_ensure_doc_deps()
+_check_doc_deps()
 
-from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Callable, Optional
 import flet as ft  # Version: 0.86.5
-import httpx
 
-# 
-try:
-    from pypdf import PdfReader
-except ImportError:
-    PdfReader = None 
+# ---------- i18n: RU/EN (строки — в файлах locales/<lang>.json) ----------
+def _load_langs() -> dict:
+    """Загрузить таблицы переводов locales/ru.json + locales/en.json."""
+    base = Path(__file__).parent / "locales"
+    out: dict = {}
+    for code in ("ru", "en"):
+        p = base / f"{code}.json"
+        try:
+            if p.is_file():
+                out[code] = json.loads(p.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError) as ex:
+            print(f"[i18n] cannot load {p}: {ex}")
+    if "ru" not in out:
+        out["ru"] = {"title": "LM Studio Chat"}  # минимум для стартового экрана
+    out.setdefault("en", {})
+    return out
 
-def extract_text(p: str) -> str:
-    """..."""
-    # ...
-    if suf == ".pdf":
-        if PdfReader is None:
-            raise FileError("Библиотека pypdf не установлена. Установите ее командой: pip install pypdf")
-        r = PdfReader(str(path))
-
-# ---------- i18n: RU/EN ----------
-LANGS = {
-"ru": {
-    "title": "LM Studio Chat", "send": "Отправить", "stop": "Стоп",
-    "new_chat": "Новый чат", "chats": "Чаты", "search": "Поиск чатов...",
-    "delete": "Удалить", "rename": "Переименовать", "export": "Экспорт",
-    "theme": "Тема", "font": "Шрифт", "check_conn": "Проверить соединение",
-    "summarize": "Сжать историю", "tokens": "токенов",
-    "input_hint": "Сообщение... Enter — отправить, Shift+Enter — новая строка",
-    "reasoning": "Рассуждения модели", "copy": "Копировать", "copied": "Скопировано!",
-    "edit": "Изменить", "retry": "Перегенерировать", "variants": "Вариант",
-    "model": "Модель", "preset": "Пресет", "settings": "Настройки",
-    "sec_model": "Модель", "sec_prompt": "Промпт",
-    "preset_name": "Имя пресета", "preset_name_hint": "Мой пресет",
-    "to_preset": "В пресет", "del_preset": "Удалить пресет", "clear": "Очистить",
-    "load_txt": "Загрузить .txt", "save_txt": "Сохранить .txt",
-    "sys_prompt": "System prompt", "attach": "Прикрепить файл",
-    "refresh_models": "Обновить модели", "more": "Ещё",
-    "m_compress": "Сжать историю", "m_exp_md": "Экспорт Markdown",
-    "m_exp_html": "Экспорт HTML", "m_exp_json": "Экспорт JSON",
-    "m_theme": "Светлая/тёмная тема", "m_font_up": "Шрифт +", "m_font_down": "Шрифт −",
-    "connected": "Подключено", "no_conn": "Нет связи",
-    "empty_chat": "Пустой чат", "only_files": "Только вложения",
-    "you": "Вы", "me": "Новый чат",
-    "dlg_rename": "Переименовать чат", "chat_name": "Название чата",
-    "cancel": "Отмена", "save": "Сохранить",
-    "p_ordinary": "Обычный", "p_translator": "Переводчик",
-    "p_reviewer": "Ревью кода", "p_simple": "Простыми словами",
-    "e_enter_name": "Введите название чата", "e_enter_preset": "Введите имя пресета",
-    "e_empty_prompt": "System prompt пуст — нечего сохранять",
-    "e_builtin_name": "Это имя встроенного пресета — выберите другое",
-    "e_builtin_del": "Встроенные пресеты удалить нельзя",
-    "e_no_preset": "Такого пользовательского пресета нет",
-    "e_no_msgs": "Нет сообщений", "e_few_msgs": "Мало сообщений",
-    "e_open_dlg": "Не удалось открыть диалог: {e}",
-    "e_read_file": "Не удалось прочитать файл: {e}",
-    "e_save_file": "Не удалось сохранить файл: {ex}",
-    "e_save_preset": "Не удалось сохранить пресет: {ex}",
-    "e_del_preset": "Не удалось удалить пресет: {ex}",
-    "load_cancel": "Загрузка отменена", "save_cancel": "Сохранение отменено",
-    "prompt_loaded": "System prompt загружен: {n} ({l} симв.)",
-    "prompt_saved": "System prompt сохранён: {p}",
-    "prompt_cleared": "System prompt очищен",
-    "preset_saved": "Пресет «{n}» сохранён", "preset_deleted": "Пресет «{n}» удалён",
-    "exported": "Экспортировано в data/ ({f})",
-    "stopped": "Остановлено", "assistant": "Ассистент", "ai": "AI",
-    "models_n": "Моделей: {n}", "font_n": "Шрифт {v} (применится к новым сообщениям)",
-    "summary_of": "Суммируй диалог кратко:\n{t}",
-    "summary_hist": "[Саммари истории]\n{c}",
-    "no_link": "Нет связи с {u}: {e}", "net_err": "Ошибка сети: {e}",
-    "file_not_found": "Файл не найден: {p}", "img_too_big": "Картинка слишком большая",
-    "not_image": "Не картинка: {n}", "file_too_big": "Файл > {m} MB",
-    "cant_read": "Не удалось прочитать {n}: {e}",
-    "pdf_empty": "[PDF без текстового слоя]", "clipped": "\n\n[...обрезано, всего {n} символов...]",
-    "lang": "Язык", "fb_helpful": "Полезно", "fb_bad": "Неточно", "fb_harm": "Опасно",
-    "tts_speak": "Озвучить", "stt_mic": "Голосовой ввод",
-    "tts_preparing": "⏳ Готовлю озвучку… ({i}/{n})",
-    "tts_playing": "🔊 Воспроизведение {i}/{n} (повторный клик — стоп)",
-    "continue": "Продолжить", "branch": "Ответить заново с этого места",
-    "empty_response": "Модель вернула пустой ответ",
-    "pin": "Закрепить", "unpin": "Открепить",
-    "e_no_pil": "Нет Pillow: pip install pillow",
-    "e_clipboard": "Буфер обмена недоступен: {e}",
-    "pasted_img": "Вставлено из буфера: {n}",
-    "select": "Выбрать для экспорта", "no_selection": "Ничего не выбрано: отметьте сообщения галочкой",
-    "m_exp_sel": "Экспорт выбранного ({n})", "exp_sel_hint": "В файл попадут только отмеченные галочкой сообщения.",
-    "handsfree": "Голосовой диалог", "handsfree_on": "🎙 Голосовой диалог включён — говорите",
-    "handsfree_stop": "Остановить голосовой диалог", "e_busy": "Дождитесь окончания генерации",
-    "server_down": "Сервер недоступен", "server_starting": "Запускаю сервер…",
-    "restart_server": "Перезапустить сервер", "e_no_lms": "lms не найден в PATH",
-    "autotitle_prompt": "Придумай короткое название (до 40 символов, без кавычек) для чата, который начался с вопроса: {t}",
-    "mic_listening": "🎤 Говорите… нажмите микрофон для завершения",
-    "mic_stop_title": "Остановить запись",
-    "generating": "⏳ Модель думает…",
-    "typing": "✍️ Модель печатает…",
-    "e_no_tts": "Нет TTS: pip install edge-tts",
-    "e_no_stt": "Нет SpeechRecognition: pip install SpeechRecognition PyAudio",
-    "copy_code": "Копировать код",
-    "model_loading": "Загрузка модели {m}…", "model_loaded": "Модель загружена: {m}",
-    "e_load_model": "Не удалось загрузить {m}: {e}",
-    "e_no_model_on_server": "Модели {m} нет на сервере",
-    "dlg_novision_t": "Модель без поддержки изображений",
-    "dlg_novision_c": "Сервер ответил 400 — вероятно, модель не принимает картинки. Повторить запрос без изображений (в историю вставится пометка)?",
-    "retry_noimg": "Повторить без картинок",
-    "vision_off": "🚫 vision выкл — отправлено без изображений",
-    "vision_auto": "🚫 авто: модель без vision — отправлено без изображений",
-    "vision_send": "Vision: отправлять изображения",
-    "dlg_ctxfull_t": "Контекст переполнен",    "dlg_ctxfull_c": "~{cur} / {cl} токенов. Сжать историю (summarize), продолжить как есть или отменить?",
-    "ctx_still_over": "всё ещё переполнено",
-    "continue_btn": "Продолжить",
-    "m_find": "Найти в чате", "m_rated": "Только оценённые ★", "m_exp_fb": "Экспорт фидбека JSONL",
-    "sec_profiles": "Профили связок", "profile": "Профиль",
-    "profile_name": "Имя профиля", "profile_name_hint": "Код-ревью Qwen",
-    "to_profile": "В профиль", "del_profile": "Удалить профиль",
-    "profile_applied": "Профиль «{n}» применён", "profile_saved": "Профиль «{n}» сохранён",
-    "profile_deleted": "Профиль «{n}» удалён",
-    "sec_env": "Окружение", "env_none": "Окружение не загружено",
-    "env_req": "requirements: {n} симв.", "env_vars_n": ".env: {n} vars",
-    "req_loaded": "requirements загружен: {n}", "env_loaded": ".env загружен: {n} vars",
-},
-"en": {
-    "title": "LM Studio Chat", "send": "Send", "stop": "Stop",
-    "new_chat": "New chat", "chats": "Chats", "search": "Search chats...",
-    "delete": "Delete", "rename": "Rename", "export": "Export",
-    "theme": "Theme", "font": "Font", "check_conn": "Check connection",
-    "summarize": "Summarize history", "tokens": "tokens",
-    "input_hint": "Message... Enter to send, Shift+Enter for new line",
-    "reasoning": "Model reasoning", "copy": "Copy", "copied": "Copied!",
-    "edit": "Edit", "retry": "Regenerate", "variants": "Variant",
-    "model": "Model", "preset": "Preset", "settings": "Settings",
-    "sec_model": "Model", "sec_prompt": "Prompt",
-    "preset_name": "Preset name", "preset_name_hint": "My preset",
-    "to_preset": "Save preset", "del_preset": "Delete preset", "clear": "Clear",
-    "load_txt": "Load .txt", "save_txt": "Save .txt",
-    "sys_prompt": "System prompt", "attach": "Attach file",
-    "refresh_models": "Refresh models", "more": "More",
-    "m_compress": "Summarize history", "m_exp_md": "Export Markdown",
-    "m_exp_html": "Export HTML", "m_exp_json": "Export JSON",
-    "m_theme": "Light/dark theme", "m_font_up": "Font +", "m_font_down": "Font −",
-    "connected": "Connected", "no_conn": "No connection",
-    "empty_chat": "Empty chat", "only_files": "Attachments only",
-    "you": "You", "me": "New chat",
-    "dlg_rename": "Rename chat", "chat_name": "Chat name",
-    "cancel": "Cancel", "save": "Save",
-    "p_ordinary": "Default", "p_translator": "Translator",
-    "p_reviewer": "Code reviewer", "p_simple": "Simply explained",
-    "e_enter_name": "Enter chat name", "e_enter_preset": "Enter preset name",
-    "e_empty_prompt": "System prompt is empty — nothing to save",
-    "e_builtin_name": "This is a built-in preset name — pick another",
-    "e_builtin_del": "Built-in presets cannot be deleted",
-    "e_no_preset": "No such custom preset",
-    "e_no_msgs": "No messages", "e_few_msgs": "Too few messages",
-    "e_open_dlg": "Could not open dialog: {e}",
-    "e_read_file": "Could not read file: {e}",
-    "e_save_file": "Could not save file: {ex}",
-    "e_save_preset": "Could not save preset: {ex}",
-    "e_del_preset": "Could not delete preset: {ex}",
-    "load_cancel": "Load cancelled", "save_cancel": "Save cancelled",
-    "prompt_loaded": "System prompt loaded: {n} ({l} chars)",
-    "prompt_saved": "System prompt saved: {p}",
-    "prompt_cleared": "System prompt cleared",
-    "preset_saved": "Preset “{n}” saved", "preset_deleted": "Preset “{n}” deleted",
-    "exported": "Exported to data/ ({f})",
-    "stopped": "Stopped", "assistant": "Assistant", "ai": "AI",
-    "models_n": "Models: {n}", "font_n": "Font {v} (applies to new messages)",
-    "summary_of": "Briefly summarize the dialogue:\n{t}",
-    "summary_hist": "[History summary]\n{c}",
-    "no_link": "No connection to {u}: {e}", "net_err": "Network error: {e}",
-    "file_not_found": "File not found: {p}", "img_too_big": "Image too large",
-    "not_image": "Not an image: {n}", "file_too_big": "File > {m} MB",
-    "cant_read": "Could not read {n}: {e}",
-    "pdf_empty": "[PDF has no text layer]", "clipped": "\n\n[...clipped, {n} chars total...]",
-    "lang": "Language", "fb_helpful": "Helpful", "fb_bad": "Inaccurate", "fb_harm": "Harmful",
-    "tts_speak": "Speak aloud", "stt_mic": "Voice input",
-    "tts_preparing": "⏳ Preparing speech… ({i}/{n})",
-    "tts_playing": "🔊 Playing {i}/{n} (click again — stop)",
-    "continue": "Continue", "branch": "Retry from here",
-    "empty_response": "Model returned an empty response",
-    "pin": "Pin", "unpin": "Unpin",
-    "e_no_pil": "No Pillow: pip install pillow",
-    "e_clipboard": "Clipboard unavailable: {e}",
-    "pasted_img": "Pasted from clipboard: {n}",
-    "select": "Select for export", "no_selection": "Nothing selected: tick messages first",
-    "m_exp_sel": "Export selected ({n})", "exp_sel_hint": "Only ticked messages will be exported.",
-    "handsfree": "Voice dialogue", "handsfree_on": "🎙 Voice dialogue on — speak",
-    "handsfree_stop": "Stop voice dialogue", "e_busy": "Wait for generation to finish",
-    "server_down": "Server unreachable", "server_starting": "Starting server…",
-    "restart_server": "Restart server", "e_no_lms": "lms not found in PATH",
-    "autotitle_prompt": "Suggest a short title (max 40 chars, no quotes) for a chat that started with: {t}",
-    "mic_listening": "🎤 Listening… press mic to finish",
-    "mic_stop_title": "Stop recording",
-    "generating": "⏳ Thinking…",
-    "typing": "✍️ Typing…",
-    "e_no_tts": "No TTS engine: pip install edge-tts",
-    "e_no_stt": "No SpeechRecognition: pip install SpeechRecognition PyAudio",
-    "copy_code": "Copy code",
-    "model_loading": "Loading model {m}…", "model_loaded": "Model loaded: {m}",
-    "e_load_model": "Failed to load {m}: {e}",
-    "e_no_model_on_server": "Model {m} not found on server",
-    "dlg_novision_t": "Model without image support",
-    "dlg_novision_c": "Server replied 400 — the model likely rejects images. Retry without images (a note will be inserted)?",
-    "retry_noimg": "Retry without images",
-    "vision_off": "🚫 vision off — sent without images",
-    "vision_auto": "🚫 auto: no-vision model — sent without images",
-    "vision_send": "Vision: send images",
-    "dlg_ctxfull_t": "Context full",
-    "dlg_ctxfull_c": "~{cur} / {cl} tokens. Summarize history, continue as-is, or cancel?",
-    "ctx_still_over": "still over the limit",
-    "continue_btn": "Continue",
-    "m_find": "Find in chat", "m_rated": "Rated only ★", "m_exp_fb": "Export feedback JSONL",
-    "sec_profiles": "Combo profiles", "profile": "Profile",
-    "profile_name": "Profile name", "profile_name_hint": "Code-review Qwen",
-    "to_profile": "Save profile", "del_profile": "Delete profile",
-    "profile_applied": "Profile “{n}” applied", "profile_saved": "Profile “{n}” saved",
-    "profile_deleted": "Profile “{n}” deleted",
-    "sec_env": "Environment", "env_none": "No environment loaded",
-    "env_req": "requirements: {n} chars", "env_vars_n": ".env: {n} vars",
-    "req_loaded": "requirements loaded: {n}", "env_loaded": ".env loaded: {n} vars",
-},
-}
+LANGS = _load_langs()
 CUR = {"lang": "ru"}
-try:
-    from localization import LocalizationManager
-    from logging_config import setup_logging, get_logger
-    _i18n = LocalizationManager(LANGS, default="ru", preset_i18n={
-        "Обычный": "p_ordinary", "Переводчик": "p_translator",
-        "Ревью кода": "p_reviewer", "Простыми словами": "p_simple"})
-    _log = get_logger("app")
-except ImportError:  # standalone run without new modules: fall back to legacy
-    LocalizationManager = None  # type: ignore
-    _i18n = None  # type: ignore
-    def setup_logging(*a, **k):  # type: ignore
-        import logging as _l
-        return _l.getLogger("app")
-    def get_logger(name="app"):  # type: ignore
-        import logging as _l
-        return _l.getLogger(name)
-    _log = get_logger("app")
-# ---------- 6: presentation-слой (см. views.py; fallback — локальная логика) ----------
-try:
-    from views import (visible_messages as _visible_messages,  # type: ignore
-                       format_feedback as _format_feedback,
-                       token_stats as _token_stats,
-                       ViewBinder as _ViewBinder)
-except ImportError:
-    _visible_messages = _format_feedback = _token_stats = _ViewBinder = None  # type: ignore
+from localization import LocalizationManager
+from logging_config import setup_logging, get_logger
+_i18n = LocalizationManager(LANGS, default="ru", preset_i18n={
+    "Обычный": "p_ordinary", "Переводчик": "p_translator",
+    "Ревью кода": "p_reviewer", "Простыми словами": "p_simple"})
+_log = get_logger("app")
+# ---------- 6: presentation-слой (views.py) ----------
+from views import (visible_messages as _visible_messages,  # type: ignore
+                   format_feedback as _format_feedback,
+                   token_stats as _token_stats,
+                   ViewBinder as _ViewBinder)
+
 def tr(key: str, **kw) -> str:
-    if _i18n is not None:
-        return _i18n.tr(key, **kw)
-    s = LANGS.get(CUR["lang"], LANGS["ru"]).get(key, LANGS["ru"].get(key, key))
-    try: return s.format(**kw) if kw else s
-    except Exception: return s
-STR = LANGS["ru"]  # legacy alias
+    return _i18n.tr(key, **kw)
+
+def voice_err(ex: BaseException) -> str:
+    """Перевести VoiceError через его i18n-код; прочие исключения — как есть."""
+    code = getattr(ex, "code", "")
+    if code:
+        return tr(code, **getattr(ex, "params", {}))
+    return str(ex)
 PRESET_I18N = {"Обычный": "p_ordinary", "Переводчик": "p_translator",
                "Ревью кода": "p_reviewer", "Простыми словами": "p_simple"}
 def preset_display(key: str) -> str:
@@ -332,22 +107,15 @@ for p in (CHATS, ATTACH): p.mkdir(parents=True, exist_ok=True)
 def _all_presets() -> dict:  # встроенные (на текущем языке) + пользовательские из presets.json
     d = {k: (v.get(CUR["lang"], v["ru"]) if isinstance(v, dict) else v)
          for k, v in BUILTIN_PRESETS.items()}
-    try:
-        if PRESETS_F.is_file():
-            raw = json.loads(PRESETS_F.read_text("utf-8"))
-            if isinstance(raw, dict):
-                d.update({str(k): str(v) for k, v in raw.items()})
-    except Exception: pass
+    d.update(_load_custom_presets())
     return d
 def _save_custom_presets(custom: dict):
-    PRESETS_F.write_text(json.dumps(custom, ensure_ascii=False, indent=2), "utf-8")
+    from fsutil import write_json
+    write_json(PRESETS_F, custom)
 def _load_custom_presets() -> dict:
-    try:
-        if PRESETS_F.is_file():
-            raw = json.loads(PRESETS_F.read_text("utf-8"))
-            if isinstance(raw, dict): return {str(k): str(v) for k, v in raw.items()}
-    except Exception: pass
-    return {}
+    from fsutil import read_json
+    raw = read_json(PRESETS_F, {})
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
 
 DEFAULT_SETTINGS = {"system_prompt": "", "temperature": 0.7, "top_p": 1.0,
     "repeat_penalty": 1.0, "seed": -1, "max_tokens": 2048,
@@ -378,41 +146,10 @@ THEMES = {"dark": {"bg": "#1E1E1E", "panel": "#252526", "border": "#333333",
     "muted": "#6B7280", "accent": "#1976D2", "hover": "#EEF1F6",
     "input_bg": "#FFFFFF", "chip_bg": "#EEF1F6", "shadow": "#B0B5C0"}}
 
-# ---------- модели (Pydantic v2, см. models.py; fallback — dataclasses) ----------
-try:
-    from models import Attachment, ChatMessage  # type: ignore
-except ImportError:
-    @dataclass
-    class Attachment:
-        path: str; mime: Optional[str] = None; b64: Optional[str] = None
-        def to_dict(self): return asdict(self)
-        @staticmethod
-        def from_dict(d): return Attachment(d["path"], d.get("mime"), d.get("b64"))
-
-    @dataclass
-    class ChatMessage:
-        text: str; is_user: bool; ts: float = field(default_factory=time.time)
-        attachments: list = field(default_factory=list)
-        variants: list = field(default_factory=list)  # альтернативные ответы (4)
-        rating: Optional[int] = None  # 1..5 feedback (assistant only)
-        feedback_type: Optional[str] = None  # helpful|inaccurate|harmful|other
-        gen_stats: Optional[str] = None  # "N tok · X tok/s · Ys" — подпись под ответом
-        stopped: bool = False  # генерация прервана Stop — можно «Продолжить»
-        def to_dict(self):
-            return {"text": self.text, "is_user": self.is_user, "ts": self.ts,
-                    "attachments": [a.to_dict() if isinstance(a, Attachment) else a for a in self.attachments],
-                    "variants": self.variants, "rating": self.rating,
-                    "feedback_type": self.feedback_type, "gen_stats": self.gen_stats,
-                    "stopped": self.stopped}
-        @staticmethod
-        def from_dict(d):
-            atts = [Attachment.from_dict(a) if isinstance(a, dict) and "path" in a else a for a in d.get("attachments", [])]
-            return ChatMessage(d["text"], d["is_user"], d.get("ts", 0), atts, d.get("variants", []),
-                               d.get("rating"), d.get("feedback_type"), d.get("gen_stats"),
-                               bool(d.get("stopped", False)))
+# ---------- модели (Pydantic v2) ----------
+from models import Attachment, ChatMessage  # type: ignore
 
 class FileError(Exception): pass
-class StreamCancelled(Exception): pass
 
 # ---------- 2: парсинг файлов ----------
 def encode_image(p: str):
@@ -460,240 +197,47 @@ def extract_text(p: str) -> str:
 def _clip(t: str, lim: int = 20000) -> str:
     return t if len(t) <= lim else t[:lim] + tr("clipped", n=len(t))
 
-def estimate_tokens(s: str) -> int:  # #3 грубая оценка (канон — api_payload)
-    try:
-        from api_payload import estimate_tokens as _est  # type: ignore
-        return _est(s)
-    except ImportError:
-        return max(1, len(s or "") // 4)
+# ---------- 7: сетевой клиент (lm_client.LmClient) ----------
+from lm_client import LmClient as _LmClient, StreamCancelled  # type: ignore
 
-# ---------- 7: сетевой клиент (см. lm_client.py; fallback — локальный класс) ----------
-try:
-    from lm_client import LmClient as _LmClient, StreamCancelled  # type: ignore
-    def LmClient():  # type: ignore # factory: та же сигнатура вызова, что раньше
-        return _LmClient(MODEL_URL, CHAT_URL, base_url=BASE_URL, timeout=TIMEOUT, tr=tr, log=_log)
-except ImportError:
-    class StreamCancelled(Exception): pass
-    class LmClient:
-        def __init__(self): self._c = httpx.AsyncClient(timeout=TIMEOUT); self._cancel = False
-        def cancel(self): self._cancel = True
-        async def close(self): self._cancel = True; await self._c.aclose()
-        async def fetch_models(self) -> list[str]:
-            last = None
-            for i in range(3):  # ретраи
-                try:
-                    r = await self._c.get(MODEL_URL); r.raise_for_status()
-                    return [m["id"] for m in r.json().get("data", []) if "id" in m]
-                except Exception as e: last = e; await asyncio.sleep(1 * (i + 1))
-            raise RuntimeError(tr("no_link", u=BASE_URL, e=last))
-        def _loaded_from_api_models(j) -> tuple:
-            items: list = []
-            if isinstance(j, dict):
-                if isinstance(j.get("models"), list):
-                    items = j["models"]
-                elif isinstance(j.get("data"), list):
-                    items = j["data"]
-                elif "key" in j or ("id" in j and "loaded_instances" in j):
-                    items = [j]
-                else:
-                    return [], False
-            elif isinstance(j, list):
-                items = j
-            else:
-                return [], False
-            out: list[str] = []
-            understood = False
-            for m in items:
-                if not isinstance(m, dict):
-                    continue
-                inst = m.get("loaded_instances")
-                flag = None
-                if isinstance(inst, list):
-                    flag = len(inst) > 0
-                    understood = True
-                elif isinstance(inst, bool):
-                    flag = inst
-                    understood = True
-                if flag is None and isinstance(m.get("loaded"), bool):
-                    flag = m["loaded"]
-                    understood = True
-                if flag is None and isinstance(m.get("state"), str):
-                    flag = m["state"].lower() in ("loaded", "active", "running")
-                    understood = True
-                if flag is None:
-                    continue
-                if not flag:
-                    continue
-                for k in ("key", "id", "display_name", "name"):
-                    v = m.get(k)
-                    if isinstance(v, str) and v and v not in out:
-                        out.append(v)
-                        break
-                if isinstance(inst, list):
-                    for ins in inst:
-                        if isinstance(ins, dict):
-                            v = ins.get("id")
-                            if isinstance(v, str) and v and v not in out:
-                                out.append(v)
-            return out, understood
+def LmClient():  # type: ignore # factory: endpoint/tr/logger берутся из конфига модуля
+    return _LmClient(MODEL_URL, CHAT_URL, base_url=BASE_URL, timeout=TIMEOUT, tr=tr, log=_log)
 
-        async def loaded_models(self) -> list[str]:
-            root = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
-            for base in (root, BASE_URL):
-                for p in ("/api/v1/models", "/api/v0/models"):
-                    try:
-                        r = await self._c.get(base + p, timeout=15.0)
-                        r.raise_for_status()
-                        out, understood = _loaded_from_api_models(r.json())
-                        if understood:
-                            return out
-                    except Exception:
-                        continue
-            for base in (root, BASE_URL):
-                for p in ("/api/v1/models/loads", "/api/v1/models/loaded",
-                          "/api/v0/models/loads"):
-                    try:
-                        r = await self._c.get(base + p, timeout=15.0)
-                        r.raise_for_status()
-                        j = r.json()
-                        items = j.get("data", j) if isinstance(j, dict) else j
-                        if isinstance(items, dict):
-                            items = [items]
-                        if not isinstance(items, list):
-                            continue
-                        out = [x for x in
-                               (m.get("id") or m.get("model") or m.get("key")
-                                if isinstance(m, dict) else m for m in items)
-                               if isinstance(x, str) and x]
-                        if out:
-                            return out
-                    except Exception:
-                        continue
-            return []
-        async def chat_stream(self, msgs, model, s: dict, on_delta: Callable):
-            self._cancel = False
-            payload = {"model": model, "messages": msgs, "temperature": s["temperature"],
-                "max_tokens": s["max_tokens"], "stream": True}
-            if s.get("seed", -1) >= 0: payload["seed"] = s["seed"]
-            if s.get("repeat_penalty", 1.0) != 1.0: payload["repeat_penalty"] = s["repeat_penalty"]
-            content, reasoning, usage = "", "", {}
-            for attempt in range(2):  # автореконнект: 1 ретрай при обрыве SSE
-                try:
-                    async with self._c.stream("POST", CHAT_URL, json=payload) as r:
-                        r.raise_for_status()
-                        async for line in r.aiter_lines():
-                            if self._cancel: raise StreamCancelled()
-                            if not line or not line.strip().startswith("data:"): continue
-                            d = line.strip()[6:]
-                            if d == "[DONE]": break
-                            try: j = json.loads(d)
-                            except ValueError: continue
-                            if isinstance(j.get("usage"), dict):
-                                usage = j["usage"]
-                            ch = j.get("choices", [{}])[0] if isinstance(j.get("choices"), list) else {}
-                            delta = ch.get("delta", {}) or {}
-                            if delta.get("reasoning_content"):
-                                reasoning += delta["reasoning_content"]; on_delta("reasoning", delta["reasoning_content"])
-                            if delta.get("content"):
-                                content += delta["content"]; on_delta("content", delta["content"])
-                    break
-                except StreamCancelled: raise
-                except httpx.HTTPStatusError as e:
-                    body = ""
-                    try: body = e.response.text[:300]
-                    except Exception: pass
-                    raise RuntimeError(f"HTTP {e.response.status_code}: {body or e}")
-                except httpx.HTTPError as e:
-                    if self._cancel: raise StreamCancelled() from e
-                    if content or reasoning or attempt == 1:
-                        raise RuntimeError(tr("net_err", e=e))
-                    await asyncio.sleep(1.5 * (attempt + 1))  # backoff перед ретраем
-                    continue
-            return content, reasoning, usage
+# ---------- 1: хранилище чатов (repositories) ----------
+from repositories import ChatRepository as _ChatRepository, SettingsRepository as _SettingsRepository  # type: ignore
+from chat_store import (ChatStore as _ChatStore,  # type: ignore
+                        edit_user_text as _edit_user_text,
+                        list_folders as _list_folders,
+                        apply_folder_filter as _folder_filter)
 
-# ---------- 1: хранилище чатов (см. repositories.py; fallback — локальные функции) ----------
-try:
-    from repositories import ChatRepository as _ChatRepository, SettingsRepository as _SettingsRepository  # type: ignore
-    _chat_repo = _ChatRepository(CHATS, INDEX_F)
-    _set_repo = _SettingsRepository(SET_F, DEFAULT_SETTINGS)
-    def load_index() -> list: return _chat_repo.load_index()
-    def save_index(idx): _chat_repo.save_index(idx)
-    def chat_path(cid): return _chat_repo.chat_path(cid)
-    def load_chat(cid) -> list: return _chat_repo.load_chat(cid)
-    def save_chat(cid, msgs): _chat_repo.save_chat(cid, msgs)
-    def load_settings() -> dict: return _set_repo.load()
-    def save_settings(s): _set_repo.save(s)
-except ImportError:
-    def load_index() -> list:
-        if INDEX_F.is_file():
-            try: return json.loads(INDEX_F.read_text("utf-8"))
-            except Exception: pass
-        return []
-    def save_index(idx): INDEX_F.write_text(json.dumps(idx, ensure_ascii=False, indent=2), "utf-8")
-    def chat_path(cid): return CHATS / f"{cid}.json"
-    def load_chat(cid) -> list:
-        try: return [ChatMessage.from_dict(m) for m in json.loads(chat_path(cid).read_text("utf-8"))]
-        except Exception: return []
-    def save_chat(cid, msgs): chat_path(cid).write_text(json.dumps([m.to_dict() for m in msgs], ensure_ascii=False, indent=2), "utf-8")
-    def load_settings() -> dict:
-        s = dict(DEFAULT_SETTINGS)
-        if SET_F.is_file():
-            try: s.update(json.loads(SET_F.read_text("utf-8")))
-            except Exception: pass
-        return s
-    def save_settings(s): SET_F.write_text(json.dumps(s, ensure_ascii=False, indent=2), "utf-8")
+_chat_repo = _ChatRepository(CHATS, INDEX_F)
+_set_repo = _SettingsRepository(SET_F, DEFAULT_SETTINGS)
 
-# ---------- 4: маппинг LLM API (см. api_payload.APIPayloadBuilder) ----------
-try:
-    from api_payload import APIPayloadBuilder as _APIPayloadBuilder  # type: ignore
-    _payload = _APIPayloadBuilder(max_ctx_messages=MAX_CTX, extract_text=extract_text)
-    def build_api(messages: list[ChatMessage], system: str, context_tokens: int = 0,
-                  strip_images: bool = False) -> list[dict]:
-        return _payload.build(messages, system, context_tokens, strip_images=strip_images)
-    def format_env_block(settings: dict) -> str:
-        return _payload.format_env_block(settings)
-    def effective_system(settings: dict, system: str) -> str:
-        return _payload.effective_system(settings, system)
-except ImportError:
-    def build_api(messages: list[ChatMessage], system: str, context_tokens: int = 0) -> list[dict]:
-        api = []
-        if (system or "").strip(): api.append({"role": "system", "content": system.strip()})
-        hist = messages[-MAX_CTX:]
-        if context_tokens and context_tokens > 0:
-            # trim oldest while estimated history tokens exceed the limit (keep at least last 2)
-            while len(hist) > 2 and sum(estimate_tokens(m.text or "") for m in hist) > context_tokens:
-                hist = hist[1:]
-        for m in hist:
-            if m.is_user:
-                parts = [{"type": "text", "text": m.text}]
-                for a in m.attachments:
-                    if isinstance(a, Attachment) and a.mime and a.mime.startswith("image/"):
-                        if a.b64:
-                            parts.append({"type": "image_url", "image_url": {"url": f"data:{a.mime};base64,{a.b64}"}})
-                        else:
-                            parts.append({"type": "text", "text": f"[image unavailable (file not found): {Path(a.path).name}]"})
-                    elif isinstance(a, Attachment):
-                        parts.append({"type": "text", "text": f"--- {Path(a.path).name} ---\n{extract_text(a.path)}"})
-                api.append({"role": "user", "content": parts})
-            else: api.append({"role": "assistant", "content": m.text})
-        return api
+def load_index() -> list: return _chat_repo.load_index()
+def save_index(idx): _chat_repo.save_index(idx)
+def chat_path(cid): return _chat_repo.chat_path(cid)
+def load_chat(cid) -> list: return _chat_repo.load_chat(cid)
+def save_chat(cid, msgs): _chat_repo.save_chat(cid, msgs)
+def load_settings() -> dict: return _set_repo.load()
+def save_settings(s): _set_repo.save(s)
 
-    def format_env_block(settings: dict) -> str:
-        """System Context block from requirements.txt / .env stored in settings."""
-        req = (settings.get("env_requirements") or "").strip()
-        env_vars = settings.get("env_vars") or {}
-        if not req and not env_vars: return ""
-        parts = ["[System Context: Environment]"]
-        if req: parts.append(f"requirements:\n{req[:8000]}")
-        if env_vars:
-            parts.append("environment variables:\n" + "\n".join(f"- {k}={v}" for k, v in env_vars.items()))
-            parts.append("Model must respect these library versions and env vars.")
-        return "\n".join(parts)
+# ---------- 4: маппинг LLM API (api_payload.APIPayloadBuilder) ----------
+from api_payload import (APIPayloadBuilder as _APIPayloadBuilder,  # type: ignore
+                         estimate_tokens,
+                         payload_has_images as _has_img_f,
+                         payload_stats as _stats_f)
 
-    def effective_system(settings: dict, system: str) -> str:
-        env_block = format_env_block(settings)
-        blocks = [b for b in [env_block, (system or "").strip()] if b]
-        return "\n\n".join(blocks)
+_payload = _APIPayloadBuilder(max_ctx_messages=MAX_CTX, extract_text=extract_text)
+
+def build_api(messages: list[ChatMessage], system: str, context_tokens: int = 0,
+              strip_images: bool = False) -> list[dict]:
+    return _payload.build(messages, system, context_tokens, strip_images=strip_images)
+
+def format_env_block(settings: dict) -> str:
+    return _payload.format_env_block(settings)
+
+def effective_system(settings: dict, system: str) -> str:
+    return _payload.effective_system(settings, system)
 
 # ---------- UI ----------
 async def main(page: ft.Page):
@@ -702,9 +246,8 @@ async def main(page: ft.Page):
     th = THEMES[settings.get("theme", "dark")]
     fs = float(settings.get("font_scale", 1.0))
     CUR["lang"] = settings.get("lang", "ru") if settings.get("lang") in LANGS else "ru"
-    if _i18n is not None:
-        try: _i18n.set_lang(CUR["lang"])
-        except ValueError: pass
+    try: _i18n.set_lang(CUR["lang"])
+    except ValueError: pass
     _log.info("app started (lang=%s)", CUR["lang"])
     try:  # глушим известный shutdown-шум Windows-проактора (рваные keep-alive
         # сокеты при выгрузке/остановке сервера): это не ошибки программы
@@ -742,24 +285,17 @@ async def main(page: ft.Page):
     except Exception as ex:
         _log.warning("restore window geometry failed: %s", ex)
     client = LmClient()
-    try:
-        from chat_store import ChatStore as _ChatStore  # type: ignore
-        store = _ChatStore(chat_repo=_chat_repo, settings_repo=_set_repo,
-                           payload=_payload, log=_log)
-        state = store.state  # единственное состояние; legacy-код работает с тем же объектом
-        state.setdefault("loaded_model", None)
-        state.setdefault("model_touched", False)
-        state.setdefault("selected", set())
-    except (ImportError, NameError):
-        store = None
-        state = {"cid": None, "msgs": [], "files": [], "sending": False, "stick": True,
-                 "conn_ok": False, "conn_custom": None, "chat_filter": "", "rated_only": False,
-                 "loaded_model": None, "model_touched": False, "selected": set()}
+    store = _ChatStore(chat_repo=_chat_repo, settings_repo=_set_repo,
+                       payload=_payload, log=_log)
+    state = store.state  # единственное состояние
+    state.setdefault("loaded_model", None)
+    state.setdefault("model_touched", False)
 
     # --- виджеты ---
     chat_list = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO, expand=True)
     search = ft.TextField(hint_text=tr("search"), dense=True,
                           prefix_icon=ft.Icons.SEARCH_OUTLINED, border_radius=S["radius"])
+    folder_chips = ft.Row(spacing=4, wrap=True)  # №: фильтр по папкам
     chat_box = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True, auto_scroll=True)
     status = ft.Text("", size=12, color=th["muted"])
     tok_label = ft.Text("", size=11, color=th["muted"])
@@ -806,33 +342,59 @@ async def main(page: ft.Page):
     def show_e(t): err.content = ft.Text(t, color="white"); err.visible = True; page.update()
     def hide_e(): err.visible = False; page.update()
     def set_conn(ok, label=None):
-        if store is not None: store.set_conn(ok, label)  # пишет в тот же state + emit
-        else: state["conn_ok"] = ok; state["conn_custom"] = label
+        store.set_conn(ok, label)  # пишет в state + emit
         dot.bgcolor = "#4CAF50" if ok else "#EF5350"
         conn_t.value = label if label is not None else (tr("connected") if ok else tr("no_conn"))
         page.update()
 
     # --- (4) сайдбар: активный акцент + превью + счётчик ---
-    def chat_preview(cid) -> tuple[str, int]:
+    def _load_preview_raw(cid) -> tuple[str, int]:
+        """Старый путь: прочитать весь чат (используется только для миграции index)."""
         try:
             ms = load_chat(cid)
-            if not ms: return (tr("empty_chat"), 0)
+            if not ms: return "", 0
             last = next((m.text for m in reversed(ms) if (m.text or "").strip()), "")
-            return ((last[:42] + "…") if len(last) > 42 else (last or tr("only_files")), len(ms))
-        except Exception: return ("", 0)
+            return (last or "").strip()[:42], len(ms)
+        except Exception:
+            return "", 0
+
+    def _fmt_preview(raw: str, n: int) -> str:
+        if n == 0: return tr("empty_chat")
+        if not raw: return tr("only_files")
+        return raw + "…" if len(raw) >= 42 else raw  # ровно 42 = обрезано при сохранении
+
     def refresh_sidebar():
         idx = load_index(); q = (search.value or "").lower()
+        idx = _folder_filter(idx, state.get("folder_filter") or "")  # папки
         chat_list.controls.clear()
         # №4: закреплённые — первыми
         idx = sorted(idx, key=lambda c: (not c.get("pinned", False), -(c.get("ts", 0) or 0)))
+        backfill = False
         for c in idx:
             if q and q not in c["title"].lower(): continue
             cid = c["id"]
             sel = cid == state["cid"]
-            prev, n = chat_preview(cid)
+            if "preview" not in c and "msg_count" not in c:
+                # миграция старых записей index.json: один раз читаем файл и запоминаем
+                c["preview"], c["msg_count"] = _load_preview_raw(cid)
+                backfill = True
+            prev = _fmt_preview(c.get("preview") or "", int(c.get("msg_count") or 0))
+            n = int(c.get("msg_count") or 0)
             badge = ft.Container(content=ft.Text(str(n), size=10, color="white"),
                 bgcolor=th["accent"], border_radius=8, padding=ft.Padding.symmetric(vertical=2, horizontal=6)) if n else ft.Container()
             pinned = bool(c.get("pinned", False))
+            # Компактные кнопки действий: без ужатия 4 IconButton + дефолтный
+            # spacing=10 Row съедали всю ширину карточки (260px сайдбара) и
+            # Column(expand) схлопывался — заголовок шёл вертикально по буквам.
+            _ib_style = ft.ButtonStyle(padding=ft.Padding.all(2),
+                                       visual_density=ft.VisualDensity.COMPACT)
+            def _ib(icon, tip, color, handler):
+                # width/height — гарантированный компактный размер даже без M3:
+                # иначе Material навязывает min 40 и строка снова переполняется
+                return ft.IconButton(icon, icon_size=14, tooltip=tip,
+                                     icon_color=color, style=_ib_style,
+                                     width=28, height=28,
+                                     on_click=handler)
             chat_list.controls.append(ft.Container(
                 bgcolor=th["hover"] if sel else None,
                 border_radius=S["radius"], padding=8,
@@ -841,25 +403,83 @@ async def main(page: ft.Page):
                 content=ft.Row([
                     ft.Column([ft.Text((("📌 " if pinned else "") + c["title"])[:30], size=13,
                                        weight=ft.FontWeight.BOLD if sel else ft.FontWeight.NORMAL,
-                                       color=th["atc"]),
-                               ft.Text(prev, size=11, color=th["muted"])], spacing=1, expand=True),
+                                       color=th["atc"],
+                                       max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                               ft.Text(prev, size=11, color=th["muted"],
+                                       max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)],
+                              spacing=1, expand=True),
                     badge,
-                    ft.IconButton(ft.Icons.PUSH_PIN if pinned else ft.Icons.PUSH_PIN_OUTLINED,
-                        icon_size=14, tooltip=tr("unpin") if pinned else tr("pin"),
-                        icon_color=th["accent"] if pinned else None,
-                        on_click=lambda e, x=cid: toggle_pin(x)),
-                    ft.IconButton(ft.Icons.EDIT_OUTLINED, icon_size=14, tooltip=tr("rename"),
-                        on_click=lambda e, x=cid: rename_chat(x)),
-                    ft.IconButton(ft.Icons.DELETE_OUTLINE, icon_size=14, tooltip=tr("delete"),
-                        on_click=lambda e, x=cid: del_chat(x))],
+                    ft.Row([
+                        _ib(ft.Icons.PUSH_PIN if pinned else ft.Icons.PUSH_PIN_OUTLINED,
+                            tr("unpin") if pinned else tr("pin"),
+                            th["accent"] if pinned else None,
+                            lambda e, x=cid: toggle_pin(x)),
+                        _ib(ft.Icons.FOLDER_OUTLINED, tr("folder"),
+                            th["accent"] if c.get("folder") else None,
+                            lambda e, x=cid: set_chat_folder(x)),
+                        _ib(ft.Icons.EDIT_OUTLINED, tr("rename"), None,
+                            lambda e, x=cid: rename_chat(x)),
+                        _ib(ft.Icons.DELETE_OUTLINE, tr("delete"), None,
+                            lambda e, x=cid: del_chat(x))],
+                        spacing=0)],
+                    spacing=6,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER)))
+        if backfill:
+            try: save_index(idx)  # записали миграционные preview/msg_count
+            except Exception: pass
         page.update()
+
+    def refresh_folders():
+        """Чипы папок над списком чатов: Все + уникальные folder из index."""
+        cur = state.get("folder_filter") or ""
+        folder_chips.controls.clear()
+
+        def _chip(label: str, val: str, active: bool):
+            return ft.Container(
+                content=ft.Text(label, size=11,
+                                color="white" if active else th["atc"]),
+                bgcolor=th["accent"] if active else th["chip_bg"],
+                padding=ft.Padding.symmetric(horizontal=8, vertical=3),
+                border_radius=10,
+                on_click=lambda e, v=val: set_folder_filter(v))
+
+        folder_chips.controls.append(_chip(tr("folder_all"), "", cur == ""))
+        for f in _list_folders(load_index()):
+            folder_chips.controls.append(_chip(f, f, cur == f))
+        try: folder_chips.update()
+        except Exception: pass
+
+    def set_folder_filter(v: str):
+        store.set_folder_filter(v)
+        refresh_folders(); refresh_sidebar()
+
     def toggle_pin(cid):
-        idx = load_index()
-        for c in idx:
-            if c["id"] == cid:
-                c["pinned"] = not c.get("pinned", False)
-        save_index(idx); refresh_sidebar()
+        store.toggle_pin(cid)
+        refresh_sidebar()
+
+    def set_chat_folder(cid):
+        """Назначить/сменить/убрать папку чата (новое имя — поле, иначе список)."""
+        folders = _list_folders(load_index())
+        cur = next((c.get("folder", "") for c in load_index() if c.get("id") == cid), "")
+        dd = ft.Dropdown(label=tr("folder"), value=cur or "", width=200,
+                         options=[ft.DropdownOption(key="", text=tr("folder_none"))] +
+                                 [ft.DropdownOption(key=f, text=f) for f in folders])
+        new_f = ft.TextField(label=tr("folder_new"), hint_text=tr("folder_new_hint"))
+        def close(e=None):
+            try: page.pop_dialog()
+            except Exception: pass
+            page.update()
+        def do_save(e=None):
+            name = (new_f.value or "").strip() or (dd.value or "").strip()
+            store.set_folder(cid, name or None)
+            close(); refresh_folders(); refresh_sidebar()
+        page.show_dialog(ft.AlertDialog(
+            title=ft.Text(tr("folder")), 
+            content=ft.Column([dd, new_f], spacing=8, tight=True),
+            actions=[ft.TextButton(tr("cancel"), on_click=close),
+                     ft.TextButton(tr("save"), on_click=do_save)],
+            actions_alignment=ft.MainAxisAlignment.END))
+
     async def auto_title(cid, first_text):
         """№4: фоном попросить модель коротко назвать чат."""
         await asyncio.sleep(0.5)
@@ -872,61 +492,41 @@ async def main(page: ft.Page):
             name = (c or "").strip().strip("\"'«»").split("\n")[0][:40].strip()
             if not name:
                 return
-            idx = load_index()
-            changed = False
-            for cc in idx:
-                # не затирать ручное переименование: только если там ещё текст первого вопроса
-                if cc["id"] == cid and cc["title"][:40] == (first_text or "")[:40]:
-                    cc["title"] = name
-                    changed = True
-            if changed:
-                save_index(idx); refresh_sidebar()
+            # не затирать ручное переименование: только если там ещё текст первого вопроса
+            if store.auto_rename(cid, name, ((first_text or "")[:40],)):
+                refresh_sidebar()
         except Exception as ex:
             _log.warning("auto_title failed: %s", ex)
+
     def new_chat():
-        cid = uuid.uuid4().hex[:8]
-        idx = load_index(); idx.insert(0, {"id": cid, "title": tr("me"), "ts": time.time()})
-        save_index(idx); open_chat(cid)
+        cid = store.new_chat(tr("me"))
+        open_chat(cid)
+
     def open_chat(cid):
         persist()
-        try: hide_e()  # не тащим красную плашку ошибки в другой чат
+        try: hide_e()  # не тащим красную плашку ошибку в другой чат
         except Exception: pass
-        state["cid"] = cid; state["msgs"] = load_chat(cid); state["files"] = []
-        # чистка legacy-пустышек: пустые ответы ассистента без вариантов (остатки
-        # старых Стопов/пустых генераций). Вопросы с вложениями не трогаем.
-        try:
-            before = len(state["msgs"])
-            state["msgs"] = [m for m in state["msgs"]
-                             if m.is_user or (m.text or "").strip()
-                             or [v for v in (m.variants or []) if (v or "").strip()]]
-            if len(state["msgs"]) != before:
-                save_chat(cid, state["msgs"])
-                _log.info("scrubbed %d empty assistant message(s) in %s", before - len(state["msgs"]), cid)
-        except Exception as ex:
-            _log.warning("scrub empty failed: %s", ex)
-        state["chat_filter"] = ""; state["rated_only"] = False
-        state["selected"] = set()  # №8: сброс выбора при смене чата
+        store.open_chat(cid)  # загрузка + scrub legacy-пустышек + reset фильтров/выбора
+        state["files"] = []
         chat_box.controls.clear(); attach_row.controls.clear()
         for m in state["msgs"]: add_bubble(m)
-        upd_tokens(); refresh_sidebar(); page.update()
+        upd_tokens(); refresh_folders(); refresh_sidebar(); page.update()
+
     def del_chat(cid):
-        try: chat_path(cid).unlink(missing_ok=True)
-        except Exception: pass
-        save_index([c for c in load_index() if c["id"] != cid])
-        if state["cid"] == cid:
+        was_cur = state["cid"] == cid
+        store.delete_chat(cid)  # файл + запись index
+        if was_cur:
             idx = load_index(); open_chat(idx[0]["id"]) if idx else new_chat(); return
-        refresh_sidebar()
+        refresh_folders(); refresh_sidebar()
+
     def rename_chat(cid):
-        idx = load_index()
-        cur = next((c.get("title", "") for c in idx if c["id"] == cid), "")
+        cur = next((c.get("title", "") for c in load_index() if c.get("id") == cid), "")
         name_f = ft.TextField(label=tr("chat_name"), value=cur, autofocus=True)
         def do_save(e=None):
             new = (name_f.value or "").strip()[:60]
             if not new: show_e(tr("e_enter_name")); return
-            idx2 = load_index()
-            for c in idx2:
-                if c["id"] == cid: c["title"] = new
-            save_index(idx2); close_dlg(); refresh_sidebar()
+            store.rename_chat(cid, new)
+            close_dlg(); refresh_sidebar()
         def close_dlg(e=None):
             try: page.pop_dialog()
             except Exception: pass
@@ -1004,27 +604,17 @@ async def main(page: ft.Page):
         wrap = ft.Column(spacing=2, controls=[row])
         # действия
         acts = ft.Row(spacing=0)
-        sel_set = state.get("selected")  # №8: выбор сообщений для экспорта
-        if sel_set is None:
-            sel_set = state["selected"] = set()
-        _sel_on = id(m) in sel_set
+        sel_set = state.get("selected") or set()  # №8: выбор сообщений для экспорта
+        _sel_on = m.uid in sel_set
         sel_btn = ft.IconButton(ft.Icons.CHECK_BOX if _sel_on else ft.Icons.CHECK_BOX_OUTLINE_BLANK,
             icon_size=15, tooltip=tr("select"),
             icon_color=th["accent"] if _sel_on else None,
             on_click=lambda e: _toggle_sel(e))
 
         def _toggle_sel(e):
-            s = state.get("selected")
-            if s is None:
-                s = state["selected"] = set()
-            if id(m) in s:
-                s.discard(id(m))
-                sel_btn.icon = ft.Icons.CHECK_BOX_OUTLINE_BLANK
-                sel_btn.icon_color = None
-            else:
-                s.add(id(m))
-                sel_btn.icon = ft.Icons.CHECK_BOX
-                sel_btn.icon_color = th["accent"]
+            on = store.toggle_select(m.uid)
+            sel_btn.icon = ft.Icons.CHECK_BOX if on else ft.Icons.CHECK_BOX_OUTLINE_BLANK
+            sel_btn.icon_color = th["accent"] if on else None
             try: sel_btn.update()
             except Exception: pass
         acts.controls.append(sel_btn)
@@ -1063,16 +653,35 @@ async def main(page: ft.Page):
                 import functools as _ft
                 await loop.run_in_executor(
                     None, _ft.partial(speak, m.text, CUR["lang"], _progress))
-            except Exception as ex: show_e(str(ex))
+            except Exception as ex: show_e(voice_err(ex))
             finally:
                 state["speaking"] = False
                 status.value = ""; status.color = th["muted"]; page.update()
         acts.controls.append(ft.IconButton(ft.Icons.VOLUME_UP_OUTLINED, icon_size=15,
                                            tooltip=tr("tts_speak"), on_click=speak_msg))
         if m.is_user:
-            async def edit(e):
-                inp.value = m.text; page.update()  # #4: правка через поле ввода
-                state["msgs"].remove(m); chat_box.controls.remove(wrap); save_chat(state["cid"], state["msgs"]); upd_tokens(); page.update()
+            def edit(e):
+                """Диалог правки: сохранить → переотправить (старый ответ уходит в Variants)."""
+                field = ft.TextField(label=tr("edit"), value=m.text, multiline=True,
+                                     min_lines=3, max_lines=8, autofocus=True,
+                                     max_length=S["input_max"] * 10)
+                def close(ev=None):
+                    try: page.pop_dialog()
+                    except Exception: pass
+                    page.update()
+                def apply(ev=None):
+                    new_t = (field.value or "").strip()
+                    close()
+                    if not new_t:
+                        show_e(tr("e_empty_msg")); return
+                    if new_t == (m.text or "").strip():
+                        return
+                    asyncio.create_task(_edit_resend(m, new_t))
+                page.show_dialog(ft.AlertDialog(
+                    title=ft.Text(tr("dlg_edit")), content=field,
+                    actions=[ft.TextButton(tr("cancel"), on_click=close),
+                             ft.TextButton(tr("save"), on_click=apply)],
+                    actions_alignment=ft.MainAxisAlignment.END))
             async def dele(e):
                 state["msgs"].remove(m); chat_box.controls.remove(wrap); save_chat(state["cid"], state["msgs"]); upd_tokens(); page.update()
             async def branch_u(e): await branch_from(_msg_index(m))  # №3: заново с этого места
@@ -1100,13 +709,7 @@ async def main(page: ft.Page):
                                                    tooltip=tr("copy_code"), on_click=copy_code))
             fb_label = ft.Text("", size=11, color=T["muted"])
             def refresh_fb():
-                if _format_feedback is not None:
-                    fb_label.value = _format_feedback(m)
-                else:
-                    bits = []
-                    if m.rating: bits.append(f"★{m.rating}")
-                    if m.feedback_type: bits.append(str(m.feedback_type))
-                    fb_label.value = " · ".join(bits)
+                fb_label.value = _format_feedback(m)
             refresh_fb()
             def set_fb(rating=None, ftype=None):
                 async def _h(e):
@@ -1146,13 +749,8 @@ async def main(page: ft.Page):
     def upd_tokens():  # view: токены + прогресс (математика — views.token_stats)
         try: cl = int(settings.get("context_length", 8192) or 8192)
         except (ValueError, TypeError): cl = 8192
-        if _token_stats is not None:
-            label, frac, _over = _token_stats(state["msgs"], cl, estimate_tokens)
-            tok_label.value = f"{label} {tr('tokens')} · {len(state['msgs'])} msg"
-        else:
-            t = sum(estimate_tokens(m.text or "") for m in state["msgs"])
-            frac = min(1.0, t / cl) if cl else 0
-            tok_label.value = f"~{t} / {cl} {tr('tokens')} · {len(state['msgs'])} msg"
+        label, frac, _over = _token_stats(state["msgs"], cl, estimate_tokens)
+        tok_label.value = f"{label} {tr('tokens')} · {len(state['msgs'])} msg"
         try:
             ctx_bar.value = frac
             ctx_bar.color = "#EF5350" if frac >= 0.9 else (th["accent"])
@@ -1163,14 +761,8 @@ async def main(page: ft.Page):
 
     def _filtered_msgs():
         """Сообщения с учётом активных фильтров (поиск / только оценённые)."""
-        if _visible_messages is not None:
-            return _visible_messages(state["msgs"], state.get("chat_filter", ""),
-                                     state.get("rated_only", False))
-        q = (state.get("chat_filter") or "").lower()
-        rated_only = state.get("rated_only", False)
-        return [m for m in state["msgs"]
-                if not (rated_only and not (m.rating or m.feedback_type))
-                and not (q and q not in (m.text or "").lower())]
+        return _visible_messages(state["msgs"], state.get("chat_filter", ""),
+                                 state.get("rated_only", False))
 
     def render_all():
         """Перерисовать чат с учётом фильтров (поиск / только оценённые)."""
@@ -1220,52 +812,54 @@ async def main(page: ft.Page):
 
             found: int | None = _pick_max(load_info or {})
             if not found:
-                # сервер /v1/models обычно отдаёт только id — пробуем расширенные эндпоинты
-                bases = [BASE_URL.rstrip("/")]
-                root = bases[0][:-3] if bases[0].endswith("/v1") else bases[0]
-                if root not in bases:
-                    bases.append(root)
-                paths = ["/models", "/api/v1/models", "/api/v0/models",
-                         "/v1/models", "/api/v1/model", "/api/v0/model/info"]
+                # сервер /v1/models обычно отдаёт только id — пробуем расширенные
+                # эндпоинты LM Studio. Пути строим ТОЛЬКО от корня сервера:
+                # BASE_URL уже содержит /v1, и старая склейка (все базы × все пути)
+                # давала мусор вида GET /v1/api/v1/models → ERROR в логе LM Studio.
+                root = BASE_URL.rstrip("/")
+                if root.endswith("/v1"):
+                    root = root[:-3]
+                # оба пути проверены по реальному логу сервера (200 без ERROR);
+                # /api/v0/models — legacy-фолбэк, трогается только если не нашли
+                paths = ["/v1/models", "/api/v1/models", "/api/v0/models"]
                 async with _hx.AsyncClient(timeout=15) as _c:
-                    for b in bases:
+                    for p in paths:
                         if found:
                             break
-                        for p in paths:
-                            try:
-                                r = await _c.get(b + p)
-                                r.raise_for_status()
-                                j = r.json()
-                                cands = []
-                                if isinstance(j, dict):
-                                    # /api/v1/models -> {"models": [{key, max_context_length...}]}
-                                    entries = j.get("models") or j.get("data") or []
-                                    for m in entries:
-                                        if not isinstance(m, dict):
-                                            continue
-                                        ids = {m.get("id"), m.get("key"), m.get("display_name"),
-                                               m.get("name")}
-                                        if sel in ids or None in ids and m.get("id") is None:
-                                            cands.append(m)
-                                    if not cands and isinstance(j.get("data"), list):
-                                        cands = [x for x in j["data"] if isinstance(x, dict)]
-                                    cands.append(j)
-                                elif isinstance(j, list):
-                                    cands = [x for x in j if isinstance(x, dict)]
-                                for c in cands:
-                                    # точное совпадение id/key — приоритет
-                                    cids = {c.get("id"), c.get("key"), c.get("display_name"),
-                                            c.get("name")}
-                                    if sel not in cids and (c.get("id") is not None
-                                                            or c.get("key") is not None):
+                        try:
+                            r = await _c.get(root + p)
+                            r.raise_for_status()
+                            j = r.json()
+                            cands = []
+                            if isinstance(j, dict):
+                                # /api/v1/models -> {"models": [{key, max_context_length...}]}
+                                entries = j.get("models") or j.get("data") or []
+                                for m in entries:
+                                    if not isinstance(m, dict):
                                         continue
-                                    found = _pick_max(c)
-                                    if found:
-                                        break
+                                    ids = {m.get("id"), m.get("key"), m.get("display_name"),
+                                           m.get("name")}
+                                    if sel in ids or None in ids and m.get("id") is None:
+                                        cands.append(m)
+                                if not cands and isinstance(j.get("data"), list):
+                                    cands = [x for x in j["data"] if isinstance(x, dict)]
+                                cands.append(j)
+                            elif isinstance(j, list):
+                                cands = [x for x in j if isinstance(x, dict)]
+                            for c in cands:
+                                # точное совпадение id/key — приоритет
+                                cids = {c.get("id"), c.get("key"), c.get("display_name"),
+                                        c.get("name")}
+                                if sel not in cids and (c.get("id") is not None
+                                                        or c.get("key") is not None):
+                                    continue
+                                found = _pick_max(c)
                                 if found:
                                     break
-                            except Exception:
-                                continue
+                            if found:
+                                break
+                        except Exception:
+                            continue
             if found:
                 found = min(1000000, found)
                 ctxlen.max = float(found)
@@ -1450,16 +1044,6 @@ async def main(page: ft.Page):
                              int(settings.get("context_length", 8192) or 0),
                              strip_images=_strip_images)
         except FileError as ex: show_e(str(ex)); return
-        try:
-            from api_payload import payload_has_images as _has_img, payload_stats as _pstats  # type: ignore
-            _has_img_f, _stats_f = _has_img, _pstats
-        except ImportError:
-            def _has_img_f(a):  # type: ignore
-                return any(isinstance(m.get("content"), list) and
-                           any(isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"])
-                           for m in a)
-            def _stats_f(a):  # type: ignore
-                return {"messages": len(a), "images": 0}
         st = _stats_f(api)
         _log.info("request model=%s msgs=%s images=%s stripped=%s",
                   model_dd.value or DEFAULT_MODEL, st["messages"], st["images"], _strip_images)
@@ -1520,7 +1104,6 @@ async def main(page: ft.Page):
             content, reasoning = res[0], res[1]
             usage = res[2] if len(res) > 2 and isinstance(res[2], dict) else {}
             disp += "".join(buf)
-            full = (f"> 💭 {tr('reasoning')}\n{reasoning}\n\n---\n" if reasoning and not content else "") + (content or reasoning or disp)
             # в режиме «Продолжить» disp уже содержит старый хвост + дописку
             if _cont is not None:
                 am.text = disp or am.text
@@ -1632,10 +1215,10 @@ async def main(page: ft.Page):
                 else: um.attachments.append(Attachment(path=p))  # текст извлекается в build_api (#2)
             state["msgs"].append(um); add_bubble(um)
             inp.value = ""; counter.value = f"0 / {S['input_max']}"; state["files"] = []; attach_row.controls.clear()
-            # автоназвание чата (#1)
-            for c in load_index():
-                if c["id"] == state["cid"] and c["title"] in (LANGS["ru"]["me"], LANGS["en"]["me"]):
-                    c["title"] = txt[:40]; save_index(load_index()); refresh_sidebar()
+            # автоназвание чата (#1) — только пока заголовок дефолтный
+            if store.auto_rename(state["cid"], txt[:40],
+                                 (LANGS["ru"]["me"], LANGS["en"]["me"])):
+                refresh_sidebar()
             save_chat(state["cid"], state["msgs"]); upd_tokens(); page.update()
             await generate()
             # №4: автоназвание чата моделью (фоном, не затирает ручное)
@@ -1652,6 +1235,31 @@ async def main(page: ft.Page):
             if x is m:
                 return i
         return -1
+
+    async def _edit_resend(m, new_text: str):
+        """Редактирование своего сообщения + переотправка.
+
+        Текст заменяется, всё после сообщения отбрасывается (старые ответы
+        ассистента уходят в Variants нового ответа — как в branch_from).
+        """
+        if state["sending"]: show_e(tr("e_busy")); return
+        res = _edit_user_text(state["msgs"], m.uid, new_text)
+        if res is None: return
+        chat_box.controls.clear()
+        for x in state["msgs"]: add_bubble(x)
+        save_chat(state["cid"], state["msgs"]); upd_tokens(); page.update()
+        state["sending"] = True; set_sending_ui(True)
+        try:
+            _idx, variants = res
+            prev_n = len(state["msgs"])
+            await generate()
+            if len(state["msgs"]) > prev_n and variants:
+                state["msgs"][-1].variants = variants + state["msgs"][-1].variants[:5]
+            save_chat(state["cid"], state["msgs"])
+            _log.info("edit-resend at #%d: %d old reply text(s) kept as variants",
+                      _idx, len(variants))
+        finally:
+            state["sending"] = False; set_sending_ui(False); heal_bubbles(); page.update()
 
     async def continue_gen(m):
         """№1: дописать прерванный Stop'ом ответ."""
@@ -1869,13 +1477,13 @@ async def main(page: ft.Page):
 
     def export_selected(fmt):
         """№8: экспорт только отмеченных галочкой сообщений."""
-        sel = [m for m in state["msgs"] if id(m) in (state.get("selected") or set())]
+        sel = [m for m in state["msgs"] if m.uid in (state.get("selected") or set())]
         if not sel:
             show_e(tr("no_selection")); return
         export_msgs(sel, fmt, f"{state['cid']}-sel")
 
     def export_selected_dlg(e=None):
-        sel = [m for m in state["msgs"] if id(m) in (state.get("selected") or set())]
+        sel = [m for m in state["msgs"] if m.uid in (state.get("selected") or set())]
         if not sel:
             show_e(tr("no_selection")); return
 
@@ -1934,6 +1542,58 @@ async def main(page: ft.Page):
         page.show_dialog(ft.AlertDialog(title=ft.Text(tr("m_find")),
             content=q_f, actions=[ft.TextButton(tr("clear"), on_click=clear),
             ft.TextButton(tr("cancel"), on_click=close), ft.TextButton(tr("save"), on_click=apply)],
+            actions_alignment=ft.MainAxisAlignment.END))
+
+    def find_all_chats(e=None):
+        """№: глобальный поиск по всем чатам (заголовки + тела сообщений)."""
+        q_f = ft.TextField(label=tr("m_find_all"), autofocus=True, dense=True)
+        results = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
+        def close(e=None):
+            try: page.pop_dialog()
+            except Exception: pass
+            page.update()
+        def run(e=None):
+            q = (q_f.value or "").strip()
+            results.controls.clear()
+            if not q:
+                page.update(); return
+            try:
+                hits = store.search_all(q, limit=50)
+            except Exception as ex:
+                results.controls.append(ft.Text(str(ex), color="#EF5350"))
+                page.update(); return
+            if not hits:
+                results.controls.append(ft.Text(tr("e_no_results"), color=th["muted"]))
+            for h in hits:
+                def go(ev, cid=h["cid"], query=q):
+                    close()
+                    open_chat(cid)
+                    state["chat_filter"] = query  # чат откроется уже с фильтром
+                    render_all()
+                    n = sum(1 for m in state["msgs"]
+                            if query.lower() in (m.text or "").lower())
+                    status.value = f"🔍 {n}"; page.update()
+                results.controls.append(ft.Container(
+                    on_click=go, padding=8, border_radius=8,
+                    border=ft.Border.all(1, th["border"]),
+                    bgcolor=th["hover"],
+                    content=ft.Column(spacing=2, controls=[
+                        ft.Row([ft.Icon(ft.Icons.CHAT_BUBBLE_OUTLINE, size=12,
+                                        color=th["accent"]),
+                                ft.Text(h["title"], size=12,
+                                        weight=ft.FontWeight.BOLD, color=th["atc"])],
+                               spacing=4),
+                        ft.Text(h["snippet"], size=11, color=th["muted"],
+                                max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)])))
+            page.update()
+        q_f.on_submit = run
+        page.show_dialog(ft.AlertDialog(
+            title=ft.Text(tr("m_find_all")),
+            content=ft.Container(
+                width=540, height=380,
+                content=ft.Column([q_f, results], spacing=8, expand=True)),
+            actions=[ft.TextButton(tr("search_run"), on_click=run),
+                     ft.TextButton(tr("cancel"), on_click=close)],
             actions_alignment=ft.MainAxisAlignment.END))
 
     def toggle_rated_only(e=None):  # фильтр: только оценённые сообщения
@@ -2083,21 +1743,10 @@ async def main(page: ft.Page):
         sys_f.value = ""; sys_f.update(); persist()
         status.value = tr("prompt_cleared"); page.update()
     # --- Профили связок: модель + пресет + параметры одним кликом ---
-    try:
-        from repositories import ProfilesRepository as _ProfilesRepository  # type: ignore
-        _profiles_repo = _ProfilesRepository(PROFILES_F)
-        def _load_profiles() -> dict: return _profiles_repo.load()
-        def _save_profiles(p: dict): _profiles_repo.save(p)
-    except ImportError:
-        def _load_profiles() -> dict:
-            try:
-                if PROFILES_F.is_file():
-                    raw = json.loads(PROFILES_F.read_text("utf-8"))
-                    if isinstance(raw, dict): return raw
-            except Exception: pass
-            return {}
-        def _save_profiles(p: dict):
-            PROFILES_F.write_text(json.dumps(p, ensure_ascii=False, indent=2), "utf-8")
+    from repositories import ProfilesRepository as _ProfilesRepository  # type: ignore
+    _profiles_repo = _ProfilesRepository(PROFILES_F)
+    def _load_profiles() -> dict: return _profiles_repo.load()
+    def _save_profiles(p: dict): _profiles_repo.save(p)
     profile_dd = ft.Dropdown(label=tr("profile"), width=220)
     profile_name = ft.TextField(label=tr("profile_name"), hint_text=tr("profile_name_hint"), width=200, dense=True)
     def refresh_profiles(sel=None):
@@ -2240,9 +1889,8 @@ async def main(page: ft.Page):
         if lang not in LANGS: return
         old = CUR["lang"]
         CUR["lang"] = lang
-        if _i18n is not None:
-            try: _i18n.set_lang(CUR["lang"])
-            except ValueError: pass
+        try: _i18n.set_lang(CUR["lang"])
+        except ValueError: pass
         settings["lang"] = CUR["lang"]; save_settings(settings)
         # если в поле лежит текст встроенного пресета на старом языке — заменить на новый
         for k, v in BUILTIN_PRESETS.items():
@@ -2254,6 +1902,7 @@ async def main(page: ft.Page):
         return [
             ft.PopupMenuItem(tr("m_compress"), icon=ft.Icons.COMPRESS_OUTLINED, on_click=summarize),
             ft.PopupMenuItem(tr("m_find"), icon=ft.Icons.SEARCH_OUTLINED, on_click=find_in_chat),
+            ft.PopupMenuItem(tr("m_find_all"), icon=ft.Icons.FIND_IN_PAGE_OUTLINED, on_click=find_all_chats),
             ft.PopupMenuItem(tr("m_rated"), icon=ft.Icons.STAR_OUTLINE, on_click=toggle_rated_only),
             ft.PopupMenuItem(tr("m_exp_md"), icon=ft.Icons.SHARE_OUTLINED, on_click=lambda e: export("md")),
             ft.PopupMenuItem(tr("m_exp_html"), icon=ft.Icons.SHARE_OUTLINED, on_click=lambda e: export("html")),
@@ -2322,7 +1971,7 @@ async def main(page: ft.Page):
         except NameError: pass
         try: sys_f.update()
         except Exception: pass
-        upd_tokens(); refresh_sidebar()
+        upd_tokens(); refresh_folders(); refresh_sidebar()
         chat_box.controls.clear()  # перерисовать подписи пузырей на новом языке
         for m in state["msgs"]: add_bubble(m)
         page.update()
@@ -2335,7 +1984,7 @@ async def main(page: ft.Page):
     UI["new_btn"] = ft.Button(tr("new_chat"), icon=ft.Icons.ADD_OUTLINED, on_click=lambda e: new_chat())
     sidebar = ft.Container(width=S["sidebar_w"], bgcolor=th["panel"], border_radius=S["radius"], padding=8,
         border=ft.Border.all(1, th["border"]), visible=False,
-        content=ft.Column([UI["side_head"], search, chat_list, UI["new_btn"]]))
+        content=ft.Column([UI["side_head"], search, folder_chips, chat_list, UI["new_btn"]]))
     def toggle_sidebar(e=None):
         sidebar.visible = not sidebar.visible
         try: sidebar.update()
@@ -2457,7 +2106,7 @@ async def main(page: ft.Page):
                 None, listen, "ru-RU" if CUR["lang"] == "ru" else "en-US")
             inp.value = ((inp.value or "") + " " + text).strip()
             inp.update(); on_inp(None)
-        except Exception as ex: show_e(str(ex))
+        except Exception as ex: show_e(voice_err(ex))
         finally:  # --- возврат к базовому виду ---
             try:
                 mic.icon, mic.bgcolor, mic.icon_color, mic.tooltip = _old
@@ -2471,7 +2120,7 @@ async def main(page: ft.Page):
     async def handsfree_loop():
         """№9: голосовой диалог без рук: слушаю → отправляю → озвучиваю → по кругу."""
         try:
-            from voice import listen, speak, stop_playback  # type: ignore
+            from voice import listen, speak  # type: ignore  (availability probe)
         except ImportError:
             show_e(tr("e_no_stt")); state["handsfree"] = False; return
         mic = UI["mic"]
@@ -2489,7 +2138,7 @@ async def main(page: ft.Page):
                     text = await loop.run_in_executor(None, listen, lang)
                 except Exception as ex:
                     if state.get("handsfree"):
-                        show_e(str(ex))
+                        show_e(voice_err(ex))
                     break
                 if not state.get("handsfree"):
                     break
@@ -2507,7 +2156,7 @@ async def main(page: ft.Page):
                 try:
                     await loop.run_in_executor(None, speak, last.text, CUR["lang"])
                 except Exception as ex:
-                    show_e(str(ex)); break
+                    show_e(voice_err(ex)); break
         finally:
             state["handsfree"] = False
             try:
@@ -2555,6 +2204,8 @@ async def main(page: ft.Page):
             asyncio.create_task(send())
         elif e.ctrl and k == "k":
             new_chat()
+        elif e.ctrl and getattr(e, "shift", False) and k == "f":
+            find_all_chats()  # глобальный поиск по всем чатам
         elif e.ctrl and k == "f":
             find_in_chat()
         elif e.ctrl and k == "v":
@@ -2693,14 +2344,14 @@ async def main(page: ft.Page):
     page.on_close = on_app_close
 
     # шаг 6: flet-обновления едут от стора через подписчика (views.ViewBinder)
-    if store is not None and _ViewBinder is not None:
+    if store is not None:
         try: _ViewBinder(store, on_tokens=upd_tokens).bind()
         except Exception: _log.exception("view binder failed")
 
     idx = load_index()
     if not idx: new_chat()
     else: open_chat(idx[0]["id"])
-    refresh_sidebar(); refresh_profiles(); await load_models()
+    refresh_folders(); refresh_sidebar(); refresh_profiles(); await load_models()
     try: asyncio.get_running_loop().create_task(health_loop())  # №10: мониторинг сервера
     except Exception as ex: _log.warning("health monitor not started: %s", ex)
 

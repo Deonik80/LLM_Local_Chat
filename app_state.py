@@ -15,9 +15,10 @@
 
 """AppStateManager: templates metadata + environment context metadata."""
 from __future__ import annotations
-import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
+
+from fsutil import read_json, write_json
 
 
 @dataclass
@@ -119,18 +120,18 @@ class AppStateManager:
 
     # ---- persistence ----
     def save(self):
-        self.store.parent.mkdir(parents=True, exist_ok=True)
-        self.store.write_text(json.dumps({
+        write_json(self.store, {
             "templates": {k: v.to_dict() for k, v in self.templates.items()},
             "active_template": self.active_template,
             "env": self.env.to_dict(),
-        }, ensure_ascii=False, indent=2), "utf-8")
+        })
 
     def load(self):
         try:
-            if self.store.is_file():
-                raw = json.loads(self.store.read_text("utf-8"))
-                self.templates = {k: PromptTemplate.from_dict(v) for k, v in raw.get("templates", {}).items()}
+            raw = read_json(self.store, None)
+            if isinstance(raw, dict):
+                self.templates = {k: PromptTemplate.from_dict(v)
+                                  for k, v in raw.get("templates", {}).items()}
                 self.active_template = raw.get("active_template")
                 if "env" in raw:
                     self.env = EnvContext.from_dict(raw["env"])

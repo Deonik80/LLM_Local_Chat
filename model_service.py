@@ -16,6 +16,7 @@
 """ModelService: renders prompt templates + environment system context for API calls."""
 from __future__ import annotations
 from app_state import PromptTemplate, EnvContext
+from api_payload import mask_env_value
 
 
 PLACEHOLDERS = ("{user_query}", "{context_data}", "{role_definition}")
@@ -37,14 +38,17 @@ def render_template(template: PromptTemplate, *, user_query: str = "",
 
 
 def format_env_context(env: EnvContext) -> str:
-    """Format environment as a special System Context block."""
+    """Format environment as a special System Context block.
+
+    Secret-like env values are masked (never sent to the model).
+    """
     if not env.requirements and not env.env_vars:
         return ""
     parts = ["[System Context: Environment]"]
     if env.requirements:
         parts.append(f"requirements ({env.raw_name or 'requirements.txt'}):\n{env.requirements}")
     if env.env_vars:
-        keys = "\n".join(f"- {k}={v}" for k, v in env.env_vars.items())
+        keys = "\n".join(f"- {k}={mask_env_value(k, v)}" for k, v in env.env_vars.items())
         parts.append(f"environment variables:\n{keys}\nModel must respect these library versions and env vars.")
     return "\n".join(parts)
 

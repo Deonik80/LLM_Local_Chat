@@ -15,8 +15,9 @@
 
 """PersistenceService: chat persistence + per-assistant-message feedback/rating."""
 from __future__ import annotations
-import json
 from pathlib import Path
+
+from fsutil import read_json, write_json
 
 FEEDBACK_TYPES = ("helpful", "inaccurate", "harmful", "other", None)
 
@@ -28,14 +29,11 @@ class PersistenceService:
     def _path(self, cid): return self.chats_dir / f"{cid}.json"
 
     def load(self, cid) -> list:
-        p = self._path(cid)
-        if p.is_file():
-            try: return json.loads(p.read_text("utf-8"))
-            except Exception: pass
-        return []
+        raw = read_json(self._path(cid), [])
+        return raw if isinstance(raw, list) else []
 
     def save(self, cid, messages: list):
-        self._path(cid).write_text(json.dumps(messages, ensure_ascii=False, indent=2), "utf-8")
+        write_json(self._path(cid), messages)
 
     def set_feedback(self, cid, index: int, *, rating: int | None = None,
                      feedback_type: str | None = None, comment: str = "") -> dict:

@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -36,6 +37,10 @@ from pydantic import BaseModel, Field, field_validator
 FeedbackType = Literal["helpful", "inaccurate", "harmful", "other"]
 _FEEDBACK_OK = ("helpful", "inaccurate", "harmful", "other")
 MAX_IMG_BYTES = 10 * 1024 * 1024
+
+
+def _new_uid() -> str:
+    return uuid.uuid4().hex[:12]
 
 
 class Attachment(BaseModel):
@@ -76,6 +81,8 @@ def rehydrate_attachment(a: "Attachment", max_bytes: int = MAX_IMG_BYTES) -> "At
 class ChatMessage(BaseModel):
     model_config = {"validate_assignment": True}
 
+    # стабильный идентификатор: переживает перезагрузку чата (в отличие от id(m))
+    uid: str = Field(default_factory=_new_uid)
     text: str = ""
     is_user: bool = False
     ts: float = Field(default_factory=time.time)
@@ -120,7 +127,11 @@ class ChatMessage(BaseModel):
         fb = d.get("feedback_type")
         if fb not in _FEEDBACK_OK:
             fb = None
+        uid = d.get("uid")
+        if not isinstance(uid, str) or not uid:
+            uid = _new_uid()  # legacy-файлы без uid получают новый при загрузке
         return ChatMessage(
+            uid=uid,
             text=d.get("text", ""), is_user=bool(d.get("is_user", False)),
             ts=d.get("ts") or time.time(), attachments=atts,
             variants=list(d.get("variants") or []),
