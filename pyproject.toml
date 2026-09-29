@@ -27,7 +27,7 @@ pythonpath = ["."]
 
 [tool.mypy]
 # Только чистые модули (без flet-UI): app.py покрывается import-smoke и ручной проверкой.
-files = ["chat_store.py", "repositories.py", "fsutil.py", "api_payload.py", "voice.py", "models.py"]
+files = ["chat_store.py", "repositories.py", "fsutil.py", "api_payload.py", "voice.py", "models.py", "lm_client.py"]
 # таргет 3.12: современный mypy не принимает 3.9, а стабы numpy 2.x (транзитивно
 # через pygame в voice.py) не парсятся ниже 3.12. Совместимость с 3.9/3.10
 # держат ruff (target-version=py39) и CI-матрица pytest 3.9–3.13.
@@ -39,7 +39,8 @@ ignore_missing_imports = true
 
 [tool.coverage.run]
 # app.py (flet-UI) вне покрытия — импорт требует data/, чистая логика вынесена в chat_store/repositories.
-source = ["chat_store", "repositories", "fsutil", "api_payload", "voice", "models"]
+# lm_client.py внутри: transport внедряется (httpx.MockTransport) — тесты идут по HTTP без сети.
+source = ["chat_store", "repositories", "fsutil", "api_payload", "voice", "models", "lm_client"]
 omit = ["app.py", "tests/*"]
 
 [tool.coverage.report]

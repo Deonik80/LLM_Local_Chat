@@ -74,6 +74,11 @@ def setup_logging(level: str | int | None = None, log_file: str | Path | None = 
 
     root = logging.getLogger()
     root.setLevel(lvl)
+    # httpcore/httpx при DEBUG логируют полные заголовки запросов (включая
+    # Authorization: Bearer <ключ>) — прижимаем их к INFO, чтобы при
+    # LOG_LEVEL=DEBUG ключ не осел в data/logs/*.log.
+    for _lib in ("httpcore", "httpx"):
+        logging.getLogger(_lib).setLevel(max(lvl, logging.INFO))
     if _INITIALIZED:
         return logging.getLogger("app")
 

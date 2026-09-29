@@ -1,0 +1,23 @@
+# Локальные данные приложения и секреты
+# settings.json хранит API-ключ LM Studio открытым текстом — в репозиторий
+# ему нельзя (см. README, раздел про доступ к серверу).
+data/settings.json
+data/settings.json.corrupt
+data/logs/
+# Мусор инструментов и кэши
+__pycache__/
+*.py[cod]
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+# Локальное окружение и редакторы
+.venv/
+venv/
+.env
+*.log
+.idea/
+.vscode/

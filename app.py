@@ -124,6 +124,21 @@ DEFAULT_SETTINGS = {"system_prompt": "", "temperature": 0.7, "top_p": 1.0,
     "window_width": 1100, "window_height": 860, "window_left": None, "window_top": None,
     "window_maximized": False,
     "lang": "ru",
+    # доступ к серверу: 'none' (по умолчанию) или 'api_key'; значения из
+    # окружения — только фолбэк, settings.json перекрывает их при запуске
+    "auth_mode": os.getenv("LM_STUDIO_AUTH_MODE", "none"),
+    "api_key": os.getenv("LM_STUDIO_API_KEY", ""),
+    # MCP-серверы из mcp.json (LM Studio 0.4.0+): по умолчанию выключено, и
+    # тогда запросы идут ровно как раньше — в /v1/chat/completions. Включённый
+    # режим переключает клиент на stateless /v1/responses с блоком tools
+    # (lm_client.mcp_active). Список серверов — метки из mcp.json, хранится
+    # списком в форме 'mcp/<label>' (mcp_servers_from_settings нормализует), а
+    # в payload /v1/responses уходят как server_label без префикса (lm_client.
+    # _mcp_tools). Значения из
+    # окружения — только фолбэк, settings.json перекрывает их при запуске.
+    "mcp_enabled": os.getenv("LM_STUDIO_MCP_ENABLED", "").strip().lower()
+                    in ("1", "on", "true", "yes", "y"),
+    "mcp_servers": [x for x in os.getenv("LM_STUDIO_MCP_SERVERS", "").replace(",", " ").split() if x],
     "theme": "dark", "font_scale": 1.0, "preset": "Обычный"}
 BUILTIN_PRESETS = {
     "Обычный": {"ru": "", "en": ""},
@@ -198,10 +213,14 @@ def _clip(t: str, lim: int = 20000) -> str:
     return t if len(t) <= lim else t[:lim] + tr("clipped", n=len(t))
 
 # ---------- 7: сетевой клиент (lm_client.LmClient) ----------
-from lm_client import LmClient as _LmClient, StreamCancelled  # type: ignore
+from lm_client import (LmClient as _LmClient, StreamCancelled, AuthError,  # type: ignore
+                       AUTH_MODES, api_key_from_settings,
+                       mcp_enabled_from_settings, mcp_servers_from_settings)
 
-def LmClient():  # type: ignore # factory: endpoint/tr/logger берутся из конфига модуля
-    return _LmClient(MODEL_URL, CHAT_URL, base_url=BASE_URL, timeout=TIMEOUT, tr=tr, log=_log)
+def LmClient(settings: dict | None = None) -> _LmClient:  # type: ignore
+    # factory: endpoint/tr/logger берутся из конфига модуля, ключ — из settings
+    return _LmClient(MODEL_URL, CHAT_URL, base_url=BASE_URL, timeout=TIMEOUT, tr=tr,
+                     log=_log, api_key=api_key_from_settings(settings or {}))
 
 # ---------- 1: хранилище чатов (repositories) ----------
 from repositories import ChatRepository as _ChatRepository, SettingsRepository as _SettingsRepository  # type: ignore
@@ -235,6 +254,15 @@ def build_api(messages: list[ChatMessage], system: str, context_tokens: int = 0,
 
 def format_env_block(settings: dict) -> str:
     return _payload.format_env_block(settings)
+
+def _without_mcp(settings: dict) -> dict:
+    """Настройки с выключенным MCP — для фоновых вызовов (заголовок чата,
+    сжатие истории). Им инструменты не нужны: /v1/responses без tools-блока
+    работает как обычный chat, а привычный /v1/chat/completions остаётся
+    нетронутым."""
+    out = dict(settings or {})
+    out["mcp_enabled"] = False
+    return out
 
 def effective_system(settings: dict, system: str) -> str:
     return _payload.effective_system(settings, system)
@@ -284,7 +312,7 @@ async def main(page: ft.Page):
                 page.window.top = int(settings["window_top"])
     except Exception as ex:
         _log.warning("restore window geometry failed: %s", ex)
-    client = LmClient()
+    client = LmClient(settings)  # ключ берётся из settings; клиент один на сессию
     store = _ChatStore(chat_repo=_chat_repo, settings_repo=_set_repo,
                        payload=_payload, log=_log)
     state = store.state  # единственное состояние
@@ -488,7 +516,7 @@ async def main(page: ft.Page):
                 return
             prompt = tr("autotitle_prompt", t=(first_text or "")[:500])
             c, *_ = await client.chat_stream([{"role": "user", "content": prompt}],
-                model_dd.value or DEFAULT_MODEL, settings, lambda k, t: None)
+                model_dd.value or DEFAULT_MODEL, _without_mcp(settings), lambda k, t: None)
             name = (c or "").strip().strip("\"'«»").split("\n")[0][:40].strip()
             if not name:
                 return
@@ -889,8 +917,14 @@ async def main(page: ft.Page):
                 try:
                     await client.fetch_models()
                     ok = True
+                except AuthError as ex:
+                    # протухший/отклонённый ключ — это не «сервер недоступен»:
+                    # показываем локализованную причину с HTTP-кодом (401/403)
+                    ok = False
+                    reason = str(ex)
                 except Exception:
                     ok = False
+                    reason = tr("server_down")
                 try:
                     if ok:
                         if not state.get("conn_ok"):
@@ -898,7 +932,7 @@ async def main(page: ft.Page):
                         else:
                             dot.bgcolor = "#4CAF50"; dot.update()
                     else:
-                        set_conn(False, tr("server_down"))
+                        set_conn(False, reason)
                 except Exception:
                     pass
             except Exception:
@@ -1096,8 +1130,69 @@ async def main(page: ft.Page):
                     pass  # пузырь уже не на странице (смена чата) — копим в disp
                 if state.get("stick", True): scroll_end()
                 last = time.time()
+        _tools: list[str] = []  # вызовы MCP за этот ответ — нужны для фолбэка
+        _tool_rows: dict[str, ft.Text] = {}  # tool -> строка вызова в чате
+        _tools_col: ft.Column | None = None
+        def _tool_line(tool: str) -> ft.Text | None:
+            """Компактная строка вызова инструмента прямо над ответом.
+
+            Строки живут только на время генерации (в историю чата не пишутся),
+            поэтому при смене чата/пересборке они просто исчезают.
+            """
+            nonlocal _tools_col
+            if state["cid"] != _cid0:
+                return None
+            if _tools_col is None:
+                _tools_col = ft.Column(spacing=2, tight=True)
+                try:  # вставляем прямо над пузырём ответа
+                    i = chat_box.controls.index(md) if md in chat_box.controls else len(chat_box.controls)
+                    chat_box.controls.insert(i, _tools_col)
+                except Exception:
+                    chat_box.controls.append(_tools_col)
+            row = _tool_rows.get(tool)
+            if row is None:
+                row = ft.Text("", size=11, color=th["muted"], selectable=True, no_wrap=True)
+                _tool_rows[tool] = row
+                _tools_col.controls.append(row)
+            return row
+        def _set_tool_line(tool: str, text: str, color: str = ""):
+            row = _tool_line(tool)
+            if row is None:
+                return
+            row.value = text
+            if color:
+                row.color = color
+            try: page.update()
+            except Exception: pass  # чат могли переключить/закрыть
+        def on_mcp_event(name, data):
+            """События MCP: вызовы инструментов — компактной строкой в чате
+            (имя + аргументы/результат), ошибка — плашкой над чатом."""
+            tool = str(data.get("tool") or "")
+            if name == "tool_start":
+                _tools.append(tool or "?")
+                args = str(data.get("args") or "").replace("\n", " ")
+                _set_tool_line(tool, tr("mcp_tool_call", t=tool, a=args))
+            elif name == "tool_done":
+                _set_tool_line(tool, tr("mcp_tool_result", t=tool,
+                                        r=str(data.get("output") or "").replace("\n", " ")),
+                               th["muted"])
+            elif name == "tool_failed":
+                _set_tool_line(tool, tr("mcp_tool_failed", t=tool,
+                                        r=str(data.get("reason") or "").replace("\n", " ")),
+                               "#EF5350")
+            elif name == "error":
+                if state["cid"] == _cid0:
+                    show_e(tr("mcp_error", t=data.get("message", "")))
+                return
+            elif state["cid"] != _cid0:
+                return
+            status.value = (tr("mcp_tool", t=tool) if tool else tr("mcp_active_hint"))
+            status.color = th["accent"]
+            try: page.update()
+            except Exception: pass  # чат могли переключить/закрыть
         try:
-            res = await client.chat_stream(api, model_dd.value or DEFAULT_MODEL, settings, on_delta)
+            res = await client.chat_stream(api, model_dd.value or DEFAULT_MODEL, settings,
+                                           on_delta, on_event=on_mcp_event)
             if state["cid"] != _cid0 or am not in state["msgs"]:
                 _log.info("stream finished for inactive chat — dropped")
                 return
@@ -1109,6 +1204,10 @@ async def main(page: ft.Page):
                 am.text = disp or am.text
             else:
                 am.text = content or reasoning or disp
+            if not (am.text or "").strip() and _tools:
+                # были вызовы инструментов, а текста нет: пузырь не убираем —
+                # иначе пользователь не видит, что модель вообще делала
+                am.text = tr("mcp_no_text", n=len(_tools))
             if not (am.text or "").strip():
                 # №3: модель вернула пустое — пузырь «…» не оставляем
                 try:
@@ -1322,7 +1421,7 @@ async def main(page: ft.Page):
         txt = "\n".join(f"{'U' if m.is_user else 'A'}: {m.text[:500]}" for m in old)
         try:
             c, *_ = await client.chat_stream([{"role": "user", "content": tr("summary_of", t=txt[:8000])}],
-                model_dd.value or DEFAULT_MODEL, settings, lambda k, t: None)
+                model_dd.value or DEFAULT_MODEL, _without_mcp(settings), lambda k, t: None)
             state["msgs"] = [ChatMessage(text=tr("summary_hist", c=c), is_user=False)] + keep
             chat_box.controls.clear()
             for m in state["msgs"]: add_bubble(m)
@@ -1861,6 +1960,128 @@ async def main(page: ft.Page):
     def clear_env(e=None):
         settings["env_requirements"] = ""; settings["env_vars"] = {}
         save_settings(settings); refresh_env_label(); env_label.update(); page.update()
+    # --- Authentication API: режим доступа к серверу + ключ ---
+    # Ключ живёт в settings.json, но никогда не попадает в логи/в контекст модели
+    # и не дублируется в UI-логах: пишем только «задан/пуст». Значение поля
+    # сохраняется как есть (переключение режима его не стирает), но отправляется
+    # только в режиме 'api_key' — см. lm_client.api_key_from_settings.
+    _am = str(settings.get("auth_mode") or "none")
+    if _am not in AUTH_MODES: _am = "none"
+    auth_dd = ft.Dropdown(label=tr("auth_mode"), value=_am, width=240,
+                          options=[ft.DropdownOption("none", tr("auth_mode_none")),
+                                   ft.DropdownOption("api_key", tr("auth_mode_api_key"))])
+    api_key_f = ft.TextField(label=tr("api_key"), value=str(settings.get("api_key") or ""),
+                             hint_text=tr("api_key_hint"), password=True,
+                             can_reveal_password=True, width=260, dense=True)
+    api_key_f.visible = _am == "api_key"
+    def _auth_labels():
+        auth_dd.label = tr("auth_mode")
+        auth_dd.options = [ft.DropdownOption("none", tr("auth_mode_none")),
+                           ft.DropdownOption("api_key", tr("auth_mode_api_key"))]
+        api_key_f.label = tr("api_key"); api_key_f.hint_text = tr("api_key_hint")
+    def _save_auth(verify: bool = False):
+        """Сохранить режим/ключ и применить их к живому клиенту сессии."""
+        mode = auth_dd.value if auth_dd.value in AUTH_MODES else "none"
+        key = (api_key_f.value or "").strip()
+        settings["auth_mode"], settings["api_key"] = mode, key
+        save_settings(settings)
+        api_key_f.visible = mode == "api_key"
+        live = api_key_from_settings(settings)  # в режиме 'none' всегда пусто
+        client.set_api_key(live)  # следующие запросы — с новым ключом
+        _log.info("server access mode=%s, api key %s", mode, "set" if live else "empty")
+        try: page.update()
+        except Exception: pass
+        if verify:
+            try: asyncio.get_running_loop().create_task(verify_auth())
+            except Exception as ex: _log.warning("auth recheck not started: %s", ex)
+    def on_auth_mode(e=None): _save_auth(verify=True)
+    def on_api_key(e=None):
+        """Печатаем — только применяем ключ в живом клиенте.
+
+        settings.json пишется на blur (и при смене режима): писать файл и
+        логировать на каждую клавишу незачем, а страницу обновлять нельзя
+        — ввод и так перерисовывается сам.
+        """
+        mode = auth_dd.value if auth_dd.value in AUTH_MODES else "none"
+        settings["api_key"] = (api_key_f.value or "").strip()  # только в памяти
+        client.set_api_key(api_key_from_settings({**settings, "auth_mode": mode}))
+    def on_api_key_blur(e=None): _save_auth(verify=True)
+    auth_dd.on_select = on_auth_mode
+    api_key_f.on_change = on_api_key
+    api_key_f.on_blur = on_api_key_blur
+    async def verify_auth():
+        """Разовая проверка связи с новыми credentials (без загрузки модели)."""
+        try:
+            models = await client.fetch_models()
+        except Exception as ex:
+            _log.warning("server access check failed: %s", ex)
+            set_conn(False, tr("no_conn")); show_e(str(ex)); return
+        set_conn(True); hide_e()
+        status.value = tr("models_n", n=len(models)) if models else tr("connected")
+        page.update()
+    # --- MCP (серверы из mcp.json) ---
+    # Эндпоинта перечисления настроенных MCP-серверов у LM Studio нет, поэтому
+    # метки добавляются руками — ключи из mcp.json, хранятся как 'mcp/<label>',
+    # в payload уходят server_label без префикса (lm_client._mcp_tools).
+    # Выбранные серверы хранятся списком в data/settings.json и
+    # показываются чипами с крестиком. Пустой список при включённом тумблере —
+    # подсказка, а не молчаливое переключение транспорта.
+    mcp_sw = ft.Switch(label=tr("mcp_use"), value=mcp_enabled_from_settings(settings))
+    mcp_chips = ft.Row(wrap=True, spacing=4)
+    mcp_add_f = ft.TextField(label=tr("mcp_add_id"), hint_text=tr("mcp_add_hint"),
+                             width=300, dense=True,
+                             on_submit=lambda e: _add_mcp_server(),
+                             suffix=ft.IconButton(icon=ft.Icons.ADD, tooltip=tr("mcp_add"),
+                                                  on_click=lambda e: _add_mcp_server()))
+    def _mcp_labels():
+        mcp_sw.label = tr("mcp_use")
+        mcp_add_f.label = tr("mcp_add_id"); mcp_add_f.hint_text = tr("mcp_add_hint")
+    def _render_mcp_chips():
+        """Чипы выбранных серверов: подпись — id, крестик — убрать."""
+        mcp_chips.controls = [
+            ft.Chip(label=ft.Row([ft.Text(sid, size=11, no_wrap=True),
+                                   ft.IconButton(icon=ft.Icons.CLOSE, icon_size=14,
+                                                 tooltip=tr("mcp_remove"),
+                                                 on_click=lambda e, s=sid: _del_mcp_server(s))],
+                                  spacing=2, tight=True),
+                     tooltip=sid, on_delete=lambda e, s=sid: _del_mcp_server(s))
+            for sid in mcp_servers_from_settings(settings)]
+    def _del_mcp_server(sid: str):
+        keep = [s for s in mcp_servers_from_settings(settings) if s != sid]
+        settings["mcp_servers"] = keep
+        save_settings(settings)
+        _render_mcp_chips(); _save_mcp()
+    def _add_mcp_server():
+        """Добавить введённый id: пустая строка игнорируется, дубликат не добавим."""
+        raw = (mcp_add_f.value or "").strip()
+        mcp_add_f.value = ""
+        if not raw:
+            return
+        cur = mcp_servers_from_settings(settings)
+        settings["mcp_servers"] = cur + [raw]  # нормализацию делает _save_mcp
+        save_settings(settings)
+        _render_mcp_chips(); _save_mcp()
+    def _save_mcp(e=None):
+        """Сохранить тумблер и список серверов; статус — короткой подсказкой."""
+        settings["mcp_enabled"] = bool(mcp_sw.value)
+        settings["mcp_servers"] = mcp_servers_from_settings(settings)
+        settings.pop("mcp_mode", None)  # ранняя сборка: off/on больше не нужны
+        save_settings(settings)
+        ids = mcp_servers_from_settings(settings)
+        mcp_add_f.visible = mcp_chips.visible = bool(mcp_sw.value)
+        if mcp_sw.value and not ids:
+            _log.warning("mcp enabled without servers — falling back to OpenAI-compatible path")
+        _log.info("mcp enabled=%s servers=%s", bool(mcp_sw.value), ",".join(ids) or "-")
+        if mcp_sw.value:  # мягкая подсказка в статусе: без серверов режим молча не работает
+            status.value = (tr("mcp_no_servers") if not ids
+                            else tr("mcp_active", n=len(ids)))
+            status.color = th["muted"]
+        try: page.update()
+        except Exception: pass
+    mcp_sw.on_change = _save_mcp
+    mcp_add_f.on_blur = _save_mcp
+    mcp_add_f.visible = mcp_chips.visible = bool(mcp_sw.value)
+    _render_mcp_chips()
     preset_dd.on_select = apply_preset
     preset_dd.on_blur = apply_preset
     model_dd.on_select = on_model_change
@@ -1947,6 +2168,10 @@ async def main(page: ft.Page):
         send_images_cb.label = tr("vision_send")
         UI["sec_profiles"].value = tr("sec_profiles")
         UI["sec_env"].value = tr("sec_env")
+        UI["sec_auth"].value = tr("sec_auth")
+        _auth_labels()
+        UI["sec_mcp"].value = tr("sec_mcp")
+        _mcp_labels()
         profile_dd.label = tr("profile")
         profile_name.label = tr("profile_name"); profile_name.hint_text = tr("profile_name_hint")
         UI["profile_save"].content = tr("to_profile")
@@ -1965,7 +2190,10 @@ async def main(page: ft.Page):
                     preset_dd, preset_name, sys_f,
                     UI["to_preset"], UI["del_preset"], UI["clear"],
                     UI["load_txt"], UI["save_txt"], UI["attach"], UI["mic"], inp, btn_send,
-                    UI["sec_profiles"], UI["sec_env"], profile_dd, profile_name,
+                    UI["sec_profiles"], UI["sec_env"], UI["sec_auth"],
+                    auth_dd, api_key_f, UI["sec_mcp"], mcp_sw, mcp_add_f,
+                    mcp_chips,
+                    profile_dd, profile_name,
                     UI["profile_save"], UI["profile_del"], send_images_cb, env_label)
         try: safe_update(btn_stop)
         except NameError: pass
@@ -2045,6 +2273,8 @@ async def main(page: ft.Page):
             spacing=8, vertical_alignment=ft.CrossAxisAlignment.START))
     # --- Настройки: Модель + Окружение (Промпт живёт в топбаре) ---
     UI["sec_env"] = ft.Text(tr("sec_env"), size=13, weight=ft.FontWeight.BOLD, color=th["atc"])
+    UI["sec_auth"] = ft.Text(tr("sec_auth"), size=13, weight=ft.FontWeight.BOLD, color=th["atc"])
+    UI["sec_mcp"] = ft.Text(tr("sec_mcp"), size=13, weight=ft.FontWeight.BOLD, color=th["atc"])
     settings_p = ft.ExpansionTile(title=UI["settings_title"],
         leading=ft.Icon(ft.Icons.TUNE_OUTLINED, color=th["accent"]),
         controls=[
@@ -2056,6 +2286,19 @@ async def main(page: ft.Page):
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Row([maxt, seed], wrap=True),
             ft.Row([send_images_cb], wrap=True)),
+        ft.Divider(height=4, color=th["border"]),
+        ft.Column([ft.Row([ft.Icon(ft.Icons.SECURITY_OUTLINED, size=16, color=th["accent"]),
+                           UI["sec_auth"]],
+                          spacing=6),
+                    ft.Row([auth_dd], wrap=True),
+                    ft.Row([api_key_f], wrap=True)], spacing=6),
+        ft.Divider(height=4, color=th["border"]),
+        ft.Column([ft.Row([ft.Icon(ft.Icons.EXTENSION_OUTLINED, size=16, color=th["accent"]),
+                           UI["sec_mcp"]],
+                          spacing=6),
+                   ft.Row([mcp_sw], wrap=True),
+                   ft.Row([mcp_add_f], wrap=True),
+                   mcp_chips], spacing=6),
         ft.Divider(height=4, color=th["border"]),
         ft.Column([ft.Row([ft.Icon(ft.Icons.LAYERS_OUTLINED, size=16, color=th["accent"]),
                            UI["sec_profiles"]],
