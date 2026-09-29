@@ -2039,7 +2039,7 @@ async def main(page: ft.Page):
     def _render_mcp_chips():
         """Чипы выбранных серверов: подпись — id, крестик — убрать."""
         mcp_chips.controls = [
-            ft.Chip(label=ft.Row([ft.Text(sid, size=11, no_wrap=True),
+            ft.Chip(label=ft.Row([ft.Icon(icon=ft.Icons.CIRCLE, size=10, color=ft.Colors.GREEN), ft.Text(sid, size=11, no_wrap=True),
                                    ft.IconButton(icon=ft.Icons.CLOSE, icon_size=14,
                                                  tooltip=tr("mcp_remove"),
                                                  on_click=lambda e, s=sid: _del_mcp_server(s))],
