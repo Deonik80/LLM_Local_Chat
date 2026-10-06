@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://gnu.org>.
 
-# LM Studio Chat
+# LLM Local Chat
 from __future__ import annotations
 import asyncio, base64, csv, html as html_mod, json, mimetypes, os, time
 # ---------- опциональные парсеры документов ----------
@@ -58,7 +58,7 @@ def _load_langs() -> dict:
         except (OSError, json.JSONDecodeError) as ex:
             print(f"[i18n] cannot load {p}: {ex}")
     if "ru" not in out:
-        out["ru"] = {"title": "LM Studio Chat"}  # минимум для стартового экрана
+        out["ru"] = {"title": "LLM Local Chat"}  # минимум для стартового экрана
     out.setdefault("en", {})
     return out
 
@@ -139,6 +139,12 @@ DEFAULT_SETTINGS = {"system_prompt": "", "temperature": 0.7, "top_p": 1.0,
     "mcp_enabled": os.getenv("LM_STUDIO_MCP_ENABLED", "").strip().lower()
                     in ("1", "on", "true", "yes", "y"),
     "mcp_servers": [x for x in os.getenv("LM_STUDIO_MCP_SERVERS", "").replace(",", " ").split() if x],
+    # бэкенд LLM: 'lmstudio' | 'strata' (оба OpenAI-совместимы).
+    # strata_url по умолчанию совпадает с сервером Strata из коробки.
+    "backend": os.getenv("LLM_BACKEND", "lmstudio"),
+    "strata_url": os.getenv("STRATA_URL", "http://127.0.0.1:8080/v1"),
+    "reasoning_effort": os.getenv("STRATA_EFFORT", ""),
+    "strata_mcp": True,
     "theme": "dark", "font_scale": 1.0, "preset": "Обычный"}
 BUILTIN_PRESETS = {
     "Обычный": {"ru": "", "en": ""},
@@ -214,20 +220,22 @@ def _clip(t: str, lim: int = 20000) -> str:
 
 # ---------- 7: сетевой клиент (lm_client.LmClient) ----------
 from lm_client import (LmClient as _LmClient, StreamCancelled, AuthError,  # type: ignore
-                       AUTH_MODES, api_key_from_settings,
+                       AUTH_MODES, api_key_from_settings, base_url_from_settings,
+                       backend_from_settings,
                        mcp_enabled_from_settings, mcp_servers_from_settings)
 
 def LmClient(settings: dict | None = None) -> _LmClient:  # type: ignore
-    # factory: endpoint/tr/logger берутся из конфига модуля, ключ — из settings
-    return _LmClient(MODEL_URL, CHAT_URL, base_url=BASE_URL, timeout=TIMEOUT, tr=tr,
+    # factory: endpoint/tr/logger берутся из настроек (backend->URL), ключ — из settings
+    base = base_url_from_settings(settings or {})
+    return _LmClient(f"{base}/models", f"{base}/chat/completions", base_url=base, timeout=TIMEOUT, tr=tr,
                      log=_log, api_key=api_key_from_settings(settings or {}))
 
 # ---------- 1: хранилище чатов (repositories) ----------
 from repositories import ChatRepository as _ChatRepository, SettingsRepository as _SettingsRepository  # type: ignore
-from chat_store import (ChatStore as _ChatStore,  # type: ignore
-                        edit_user_text as _edit_user_text,
+from chat_store import (edit_user_text as _edit_user_text,
                         list_folders as _list_folders,
                         apply_folder_filter as _folder_filter)
+from event_bus import EventBus  # noqa: F401 (задел под подписки UI на события)
 
 _chat_repo = _ChatRepository(CHATS, INDEX_F)
 _set_repo = _SettingsRepository(SET_F, DEFAULT_SETTINGS)
@@ -312,9 +320,14 @@ async def main(page: ft.Page):
                 page.window.top = int(settings["window_top"])
     except Exception as ex:
         _log.warning("restore window geometry failed: %s", ex)
+    from chat_store import ChatStore
     client = LmClient(settings)  # ключ берётся из settings; клиент один на сессию
-    store = _ChatStore(chat_repo=_chat_repo, settings_repo=_set_repo,
-                       payload=_payload, log=_log)
+    store = ChatStore(_ChatRepository(CHATS, INDEX_F), _SettingsRepository(SET_F, DEFAULT_SETTINGS), _APIPayloadBuilder(), log=_log)
+
+    # --- Event Subscription (TODO: подключить рендер при переписывании UI на события) ---
+    # ViewBinder (views.py) пока работает через ChatStore.subscribe, поэтому
+    # подписки EventBus отключены, чтобы не падать на несуществующем ChatViewRenderer.
+
     state = store.state  # единственное состояние
     state.setdefault("loaded_model", None)
     state.setdefault("model_touched", False)
@@ -612,7 +625,7 @@ async def main(page: ft.Page):
             elif isinstance(a, Attachment):
                 col.controls.insert(0, ft.Text(f"📎 {Path(a.path).name}", size=12, color=T["utc"] if m.is_user else T["atc"]))
         # (2) Пузыри: заголовок + ~70% ширины через отступ + граница/тень
-        sender = tr("you") if m.is_user else "LM Studio"
+        sender = tr("you") if m.is_user else ("Strata" if str(settings.get("backend") or "") == "strata" else "LM Studio")
         head = ft.Row([ft.Text(sender, size=11, weight=ft.FontWeight.BOLD,
                                color=T["utc"] if m.is_user else T["accent"]),
                        ft.Text(tstr, size=10, color=T["muted"])], spacing=6)
@@ -842,14 +855,18 @@ async def main(page: ft.Page):
             if not found:
                 # сервер /v1/models обычно отдаёт только id — пробуем расширенные
                 # эндпоинты LM Studio. Пути строим ТОЛЬКО от корня сервера:
-                # BASE_URL уже содержит /v1, и старая склейка (все базы × все пути)
-                # давала мусор вида GET /v1/api/v1/models → ERROR в логе LM Studio.
-                root = BASE_URL.rstrip("/")
-                if root.endswith("/v1"):
-                    root = root[:-3]
+                # base уже содержит /v1, склейка давала бы мусор вида
+                # GET /v1/api/v1/models → ERROR в логе LM Studio.
+                # Корень берём из настроек (бэкенд), а не из модульной константы,
+                # иначе после переключения на Strata опрашивали бы LM Studio.
+                _base = base_url_from_settings(settings).rstrip("/")
+                root = _base[:-3] if _base.endswith("/v1") else _base
                 # оба пути проверены по реальному логу сервера (200 без ERROR);
                 # /api/v0/models — legacy-фолбэк, трогается только если не нашли
-                paths = ["/v1/models", "/api/v1/models", "/api/v0/models"]
+                # Strata: n_ctx сидит в meta /v1/models — его разберём ниже,
+                # LM-пути для strata пропускаем.
+                _is_strata = backend_from_settings(settings) == "strata"
+                paths = ["/v1/models"] if _is_strata else ["/v1/models", "/api/v1/models", "/api/v0/models"]
                 async with _hx.AsyncClient(timeout=15) as _c:
                     for p in paths:
                         if found:
@@ -965,7 +982,7 @@ async def main(page: ft.Page):
         # (GET /api/v1/models -> loaded_instances), каталог не в счёт.
         # Пусто = ничего не загружено (или сервер не отдал) — грузим сохранённую.
         try:
-            already = await client.loaded_models()
+            already = await client.loaded_models(backend_from_settings(settings))
         except Exception as ex:
             _log.warning("loaded_models lookup failed: %s", ex)
             already = []
@@ -1007,14 +1024,15 @@ async def main(page: ft.Page):
         status.value = tr("model_loading", m=sel); page.update()
         if prev and prev != sel:
             try:
-                await client.unload_model(prev)  # сначала выгрузить текущую…
+                await client.unload_model(prev, backend_from_settings(settings))  # сначала выгрузить текущую…
                 _log.info("unloaded previous model: %s", prev)
             except Exception as ex:
                 _log.warning("unload_model(%s) failed: %s", prev, ex)
             state["loaded_model"] = None
         load_info: dict = {}
         try:
-            load_info = await client.load_model(sel) or {}  # …только потом грузить новую
+            load_info = await client.load_model(sel, settings.get("context_length"),
+                                                  backend_from_settings(settings)) or {}  # …только потом грузить новую
         except Exception as ex:
             _log.error("load_model(%s) failed: %s", sel, ex)
             show_e(tr("e_load_model", m=sel, e=ex))
@@ -2009,6 +2027,58 @@ async def main(page: ft.Page):
     auth_dd.on_select = on_auth_mode
     api_key_f.on_change = on_api_key
     api_key_f.on_blur = on_api_key_blur
+    # --- Backend: lmstudio | strata + thinking-effort для Strata ---
+    from lm_client import BACKENDS, STRATA_EFFORTS  # type: ignore
+    _be = str(settings.get("backend") or "lmstudio").lower()
+    if _be not in BACKENDS:
+        _be = "lmstudio"
+    backend_dd = ft.Dropdown(label="Backend", value=_be, width=150,
+                             options=[ft.DropdownOption("lmstudio", "LM Studio"),
+                                      ft.DropdownOption("strata", "Strata")])
+    backend_url_f = ft.TextField(label="Strata URL",
+                                 value=str(settings.get("strata_url") or "http://127.0.0.1:8080/v1"),
+                                 hint_text="http://127.0.0.1:8080/v1", width=260, dense=True)
+    backend_url_f.visible = _be == "strata"
+    _ef = str(settings.get("reasoning_effort") or "").lower()
+    effort_dd = ft.Dropdown(label="Thinking", value=_ef if _ef in STRATA_EFFORTS else "",
+                            width=130,
+                            options=[ft.DropdownOption("", "default")] +
+                            [ft.DropdownOption(e, e) for e in STRATA_EFFORTS])
+    effort_dd.visible = _be == "strata"
+
+    def _save_backend(e=None):
+        be = backend_dd.value if backend_dd.value in BACKENDS else "lmstudio"
+        settings["backend"] = be
+        settings["strata_url"] = (backend_url_f.value or "").strip() or "http://127.0.0.1:8080/v1"
+        settings["reasoning_effort"] = effort_dd.value or ""
+        save_settings(settings)
+        backend_url_f.visible = be == "strata"
+        effort_dd.visible = be == "strata"
+        _log.info("backend=%s strata_url=%s effort=%s", be,
+                  settings["strata_url"], settings["reasoning_effort"] or "-")
+        try:
+            # живой клиент создан при старте под старый бэкенд — переткнуть URL,
+            # иначе load_models() и чат продолжат бить в LM Studio
+            client.set_base_url(base_url_from_settings(settings))
+        except Exception as ex:
+            _log.warning("client re-point failed: %s", ex)
+        try:
+            # шапка и MCP-секция зависят от бэкенда: thinking/URL/тумблеры
+            _refresh_mcp_visibility()
+        except Exception:
+            pass
+        try:
+            page.update()
+        except Exception:
+            pass
+        try:
+            asyncio.get_running_loop().create_task(load_models())
+        except Exception as ex:
+            _log.warning("backend recheck not started: %s", ex)
+
+    backend_dd.on_select = _save_backend
+    backend_url_f.on_blur = _save_backend
+    effort_dd.on_select = _save_backend
     async def verify_auth():
         """Разовая проверка связи с новыми credentials (без загрузки модели)."""
         try:
@@ -2082,6 +2152,159 @@ async def main(page: ft.Page):
     mcp_add_f.on_blur = _save_mcp
     mcp_add_f.visible = mcp_chips.visible = bool(mcp_sw.value)
     _render_mcp_chips()
+    # --- Strata MCP: тумблер + каталог инструментов (GET /mcp) ---
+    # У Strata серверы настраиваются в strata-<model>.json, а не в нашем UI,
+    # поэтому здесь только вкл/выкл флага strata_mcp в запросах и просмотр
+    # того, что реально отдаёт сервер: серверы, статус, тулы с описаниями.
+    from lm_client import strata_mcp_enabled as _strata_mcp_on  # type: ignore
+    strata_mcp_sw = ft.Switch(label=tr("mcp_strata_use"),
+                              value=bool(_strata_mcp_on(settings)))
+
+    def _save_strata_mcp(e=None):
+        settings["strata_mcp"] = bool(strata_mcp_sw.value)
+        save_settings(settings)
+        _log.info("strata_mcp=%s", settings["strata_mcp"])
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    strata_mcp_sw.on_change = _save_strata_mcp
+
+    def _refresh_mcp_visibility():
+        """LM-чипы — только для lmstudio, strata-тумблер — только для strata."""
+        from lm_client import backend_from_settings as _be  # type: ignore
+        is_strata = _be(settings) == "strata"
+        strata_mcp_sw.visible = is_strata
+        tools_btn.visible = is_strata
+        lm_only = not is_strata
+        mcp_sw.visible = lm_only
+        mcp_add_f.visible = mcp_chips.visible = lm_only and bool(mcp_sw.value)
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    async def _fetch_tools():
+        try:
+            return await client.list_strata_tools()
+        except Exception as ex:
+            _log.warning("GET /mcp failed: %s", ex)
+            return {"error": str(ex)}
+
+    def open_tool_catalog(e=None):
+        """Диалог «Каталог инструментов»: серверы + тулы с описаниями + поиск."""
+        search_f = ft.TextField(hint_text=tr("tools_search"), width=320, dense=True)
+        body = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, height=380, width=560)
+        status_t = ft.Text("", size=12, color=th["muted"])
+
+        def _render(data: dict):
+            q = (search_f.value or "").strip().lower()
+            body.controls.clear()
+            if data.get("error"):
+                body.controls.append(ft.Text(str(data["error"]), color="#EF5350"))
+                return
+            servers = data.get("servers") or []
+            if not servers:
+                body.controls.append(ft.Text(tr("tools_empty"), color=th["muted"]))
+                return
+            for srv in servers:
+                if not isinstance(srv, dict):
+                    continue
+                sname = str(srv.get("name") or "?")
+                st = str(srv.get("status") or "")
+                tools = srv.get("tools") or []
+                shown = [t for t in tools
+                         if isinstance(t, dict) and (not q or q in str(t.get("name", "")).lower()
+                             or q in str(t.get("description", "")).lower())]
+                if q and not shown:
+                    continue
+                body.controls.append(
+                    ft.Text(f"{sname}  •  {st}  •  {len(tools)}", weight=ft.FontWeight.BOLD,
+                            color=th["atc"]))
+                for t in shown:
+                    tname = str(t.get("name") or t.get("tool") or "?")
+                    tdesc = str(t.get("description") or "")
+                    body.controls.append(
+                        ft.Column([
+                            ft.Text(tname, size=13, color=th["accent"],
+                                    weight=ft.FontWeight.BOLD),
+                            ft.Text(tdesc, size=12, color=th["muted"])],
+                            spacing=1, tight=True))
+                body.controls.append(ft.Divider(height=4, color=th["border"]))
+
+        async def _load():
+            status_t.value = tr("tools_loading")
+            try:
+                status_t.update()
+            except Exception:
+                pass
+            data = await _fetch_tools()
+            dlg._last = data if isinstance(data, dict) else {}  # type: ignore[attr-defined]
+            status_t.value = "" if not dlg._last.get("error") else str(dlg._last.get("error"))  # type: ignore[attr-defined]
+            _render(dlg._last)  # type: ignore[attr-defined]
+            try:
+                status_t.update()
+                body.update()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        def _on_search(e=None):
+            async def _re():
+                _render(getattr(dlg, "_last", {}))
+                try:
+                    body.update()
+                except Exception:
+                    pass
+            try:
+                asyncio.get_running_loop().create_task(_re())
+            except Exception:
+                pass
+
+        async def _initial():
+            data = await _fetch_tools()
+            dlg._last = data if isinstance(data, dict) else {}  # type: ignore[attr-defined]
+            _render(dlg._last)  # type: ignore[attr-defined]
+            status_t.value = "" if not dlg._last.get("error") else str(dlg._last.get("error"))  # type: ignore[attr-defined]
+            try:
+                status_t.update()
+                body.update()
+            except Exception:
+                pass
+
+        search_f.on_change = _on_search
+        dlg = ft.AlertDialog(
+            title=ft.Text(tr("tools_title")),
+            content=ft.Column([search_f, status_t, body], spacing=6,
+                              tight=True),
+            actions=[ft.TextButton(tr("tools_refresh"),
+                                   on_click=lambda e: asyncio.get_running_loop().create_task(_load())),
+                     ft.TextButton(tr("close"), on_click=lambda e: close_tools_dlg())],
+            modal=False)
+
+        def close_tools_dlg():
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        page.show_dialog(dlg)
+        try:
+            asyncio.get_running_loop().create_task(_initial())
+        except Exception as ex:
+            status_t.value = str(ex)
+
+    tools_btn = ft.OutlinedButton(tr("tools_catalog"), icon=ft.Icons.EXTENSION_OUTLINED,
+                                  on_click=open_tool_catalog)
+    _refresh_mcp_visibility()
     preset_dd.on_select = apply_preset
     preset_dd.on_blur = apply_preset
     model_dd.on_select = on_model_change
@@ -2172,6 +2395,8 @@ async def main(page: ft.Page):
         _auth_labels()
         UI["sec_mcp"].value = tr("sec_mcp")
         _mcp_labels()
+        strata_mcp_sw.label = tr("mcp_strata_use")
+        tools_btn.text = tr("tools_catalog")
         profile_dd.label = tr("profile")
         profile_name.label = tr("profile_name"); profile_name.hint_text = tr("profile_name_hint")
         UI["profile_save"].content = tr("to_profile")
@@ -2191,8 +2416,9 @@ async def main(page: ft.Page):
                     UI["to_preset"], UI["del_preset"], UI["clear"],
                     UI["load_txt"], UI["save_txt"], UI["attach"], UI["mic"], inp, btn_send,
                     UI["sec_profiles"], UI["sec_env"], UI["sec_auth"],
-                    auth_dd, api_key_f, UI["sec_mcp"], mcp_sw, mcp_add_f,
-                    mcp_chips,
+                    auth_dd, api_key_f, backend_dd, backend_url_f, effort_dd,
+                    UI["sec_mcp"], mcp_sw, mcp_add_f,
+                    mcp_chips, strata_mcp_sw, tools_btn,
                     profile_dd, profile_name,
                     UI["profile_save"], UI["profile_del"], send_images_cb, env_label)
         try: safe_update(btn_stop)
@@ -2254,7 +2480,7 @@ async def main(page: ft.Page):
                 ft.Row([UI["menu"], ft.Icon(ft.Icons.CHAT_BUBBLE_OUTLINE, color=th["accent"]),
                     UI["top_title"]],
                     spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                ft.Row([model_dd, UI["refresh"]], spacing=8,
+                ft.Row([backend_dd, model_dd, UI["refresh"]], spacing=8,
                        vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Row([dot, conn_t], spacing=4),
                 ft.Row([ft.Column([tok_label, ctx_bar], spacing=2), lang_btn, overflow],
@@ -2291,14 +2517,17 @@ async def main(page: ft.Page):
                            UI["sec_auth"]],
                           spacing=6),
                     ft.Row([auth_dd], wrap=True),
-                    ft.Row([api_key_f], wrap=True)], spacing=6),
+                    ft.Row([api_key_f], wrap=True),
+                    ft.Row([backend_url_f, effort_dd], wrap=True)], spacing=6),
         ft.Divider(height=4, color=th["border"]),
         ft.Column([ft.Row([ft.Icon(ft.Icons.EXTENSION_OUTLINED, size=16, color=th["accent"]),
                            UI["sec_mcp"]],
                           spacing=6),
                    ft.Row([mcp_sw], wrap=True),
                    ft.Row([mcp_add_f], wrap=True),
-                   mcp_chips], spacing=6),
+                   mcp_chips,
+                   ft.Row([strata_mcp_sw], wrap=True),
+                   ft.Row([tools_btn], wrap=True)], spacing=6),
         ft.Divider(height=4, color=th["border"]),
         ft.Column([ft.Row([ft.Icon(ft.Icons.LAYERS_OUTLINED, size=16, color=th["accent"]),
                            UI["sec_profiles"]],
@@ -2499,18 +2728,29 @@ async def main(page: ft.Page):
         """
         if not model_id:
             return False
-        try:  # 1) HTTP API синхронно (оба варианта payload)
+        try:  # 1) HTTP API синхронно
             import httpx as _hx
-            root = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
+            _be = backend_from_settings(settings)
+            _base = base_url_from_settings(settings)
+            root = _base[:-3] if _base.endswith("/v1") else _base
             with _hx.Client(timeout=10.0) as c:
-                for payload in ({"instance_id": model_id}, {"model": model_id}):
+                if _be == "strata":
                     try:
-                        r = c.post(root + "/api/v1/models/unload", json=payload)
+                        r = c.post(root + "/unload", json={})
                         if r.status_code < 400:
-                            _log.info("sync-unloaded model on exit: %s", model_id)
+                            _log.info("sync-unloaded strata model on exit")
                             return True
                     except Exception:
-                        continue
+                        pass
+                else:
+                    for payload in ({"instance_id": model_id}, {"model": model_id}):
+                        try:
+                            r = c.post(root + "/api/v1/models/unload", json=payload)
+                            if r.status_code < 400:
+                                _log.info("sync-unloaded model on exit: %s", model_id)
+                                return True
+                        except Exception:
+                            continue
         except Exception as ex:
             _log.warning("sync API unload failed: %s", ex)
         try:  # 2) CLI — переживает смерть loop
@@ -2528,7 +2768,7 @@ async def main(page: ft.Page):
         lm = state.get("loaded_model") or (model_dd.value or None)
         if lm and not state.get("exit_unloaded"):
             try:  # 1) API unload (best effort)
-                await asyncio.wait_for(client.unload_model(lm), timeout=15)
+                await asyncio.wait_for(client.unload_model(lm, backend_from_settings(settings)), timeout=15)
                 _log.info("unloaded model on exit: %s", lm)
                 state["loaded_model"] = None
                 state["exit_unloaded"] = True

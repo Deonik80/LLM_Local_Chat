@@ -42,7 +42,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Callable
+from typing import Any, Callable
 
 import httpx
 
@@ -54,6 +54,60 @@ AUTH_MODES = ("none", "api_key")
 MCP_ID_PREFIX = "mcp/"
 # значения настройки mcp_enabled, которые считаем «включено» (env/строки в json)
 MCP_TRUE = ("1", "on", "true", "yes", "y")
+
+# --- backend: lmstudio | strata (оба OpenAI-совместимы) ---
+BACKENDS = ("lmstudio", "strata")
+STRATA_EFFORTS = ("none", "low", "medium", "high")
+
+
+def backend_from_settings(settings: dict) -> str:
+    """Какой бэкенд выбран: 'strata' или 'lmstudio' (по умолчанию).
+
+    Детект по URL тоже: порт 8080 / слово strata в base_url -> strata,
+    но явное settings['backend'] всегда побеждает.
+    """
+    if isinstance(settings, dict):
+        b = str(settings.get("backend") or "").strip().lower()
+        if b in BACKENDS:
+            return b
+        url = str(settings.get("base_url") or settings.get("strata_url") or "").lower()
+        if "strata" in url or ":8080" in url:
+            return "strata"
+    return "lmstudio"
+
+
+def base_url_from_settings(settings: dict, lm_default: str = "http://localhost:1234/v1",
+                           strata_default: str = "http://127.0.0.1:8080/v1") -> str:
+    """Базовый URL API по бэкенду. settings['base_url'] перекрывает всё."""
+    if isinstance(settings, dict) and settings.get("base_url"):
+        return str(settings["base_url"])
+    if backend_from_settings(settings) == "strata":
+        if isinstance(settings, dict) and settings.get("strata_url"):
+            return str(settings["strata_url"])
+        return strata_default
+    if isinstance(settings, dict) and settings.get("lmstudio_url"):
+        return str(settings["lmstudio_url"])
+    return lm_default
+
+
+def reasoning_effort_from_settings(settings: dict) -> str:
+    """Уровень thinking для Strata: none/low/medium/high, '' = не слать."""
+    if not isinstance(settings, dict):
+        return ""
+    e = str(settings.get("reasoning_effort") or "").strip().lower()
+    return e if e in STRATA_EFFORTS else ""
+
+
+def strata_mcp_enabled(settings: dict) -> bool:
+    """Разрешены ли MCP-тулы Strata в запросах (тумблер в UI, по умолчанию вкл)."""
+    if not isinstance(settings, dict):
+        return True
+    v = settings.get("strata_mcp", True)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() not in ("0", "off", "false", "no", "n")
+    return bool(v)
 
 
 def api_key_from_settings(settings: dict) -> str:
@@ -165,12 +219,24 @@ class LmClient:
         self._tr = tr or (lambda key, **kw: key)
         self._log = log
         self._api_key = ""
+        self._tc_buf: dict[str, dict[str, Any]] = {}
         self._headers = {str(k): str(v) for k, v in (headers or {}).items()
                          if v not in (None, "")}
         self.set_api_key(api_key)
 
     def cancel(self): self._cancel = True
     async def close(self): self._cancel = True; await self._c.aclose()
+
+    def set_base_url(self, base_url: str):
+        """Переключить живой клиент на другой сервер (смена бэкенда в UI).
+
+        Без этого клиент, созданный при старте под LM Studio, после
+        переключения на Strata продолжал бы бить в старые URL.
+        """
+        base = (base_url or "").strip().rstrip("/") or self._base_url
+        self._base_url = base
+        self._model_url = f"{base}/models"
+        self._chat_url = f"{base}/chat/completions"
 
     # --- аутентификация сервера (LM Studio API key) ---
     def set_api_key(self, api_key: str):
@@ -215,8 +281,23 @@ class LmClient:
         b = (self._base_url or "").rstrip("/")
         return b[:-len("/v1")] if b.endswith("/v1") else b
 
-    async def load_model(self, model_id: str, context_length: int | None = None) -> dict:
-        """Загрузить модель на сервере (долгая операция — отдельный таймаут)."""
+    async def load_model(self, model_id: str, context_length: int | None = None,
+                     backend: str = "lmstudio") -> dict:
+        """Загрузить модель на сервере (долгая операция — отдельный таймаут).
+
+        Strata держит одну модель: POST /load без payload (409 пока идёт запрос).
+        """
+        if backend == "strata":
+            r = await self._c.post(self._root() + "/load",
+                                   json={}, timeout=600.0, headers=self._req_headers())
+            try:
+                r.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise self._status_error(r.status_code, await self._safe_body(e), e) from e
+            try:
+                return r.json()
+            except Exception:
+                return {}
         payload: dict = {"model": model_id}
         if context_length:
             payload["context_length"] = context_length
@@ -237,12 +318,24 @@ class LmClient:
             except Exception: pass
         return body
 
-    async def unload_model(self, instance_id: str) -> dict:
+    async def unload_model(self, instance_id: str, backend: str = "lmstudio") -> dict:
         """Выгрузить ранее загруженную модель из памяти сервера.
 
         state хранит model_id (напр. 'omnicoder-9b'), а сервер в новых
         версиях ждёт instance_id — поэтому пробуем оба варианта payload.
+        Strata: POST /unload (409 пока идёт запрос), id не нужен.
         """
+        if backend == "strata":
+            r = await self._c.post(self._root() + "/unload",
+                                   json={}, headers=self._req_headers())
+            try:
+                r.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise self._status_error(r.status_code, await self._safe_body(e), e) from e
+            try:
+                return r.json()
+            except Exception:
+                return {}
         last = None
         for payload in ({"instance_id": instance_id}, {"model": instance_id}):
             try:
@@ -335,7 +428,7 @@ class LmClient:
                             out.append(v)
         return out, understood
 
-    async def loaded_models(self) -> list[str]:
+    async def loaded_models(self, backend: str = "lmstudio") -> list[str]:
         """Модели, уже загруженные в память сервера (best effort).
 
         Только эндпоинты с явным loaded-state. Каталог без признаков
@@ -343,7 +436,36 @@ class LmClient:
         сохранённую модель как раньше. Отказ по авторизации — единственное
         исключение, пробрасываемое наружу: молчаливый «пусто» здесь
         выглядел бы как «модель не загружена».
+
+        Strata: GET /v1/models отдаёт status.value == 'loaded' / unloaded,
+        плюс GET /health {loaded: bool, model}.
         """
+        if backend == "strata":
+            try:
+                r = await self._c.get(self._model_url, timeout=15.0,
+                                      headers=self._req_headers())
+                r.raise_for_status()
+                j = r.json()
+                items = j.get("data", []) if isinstance(j, dict) else []
+                strata_out: list[str] = [str(m.get("id")) for m in items
+                                         if isinstance(m, dict) and m.get("id")
+                                         and str((m.get("status") or {}).get("value") or "") == "loaded"]
+                if strata_out:
+                    return strata_out
+            except Exception as e:
+                if self._status_code(e) in AUTH_CODES:
+                    raise self._auth_error(self._status_code(e)) from e
+            try:
+                r = await self._c.get(self._root() + "/health", timeout=15.0,
+                                      headers=self._req_headers())
+                r.raise_for_status()
+                j = r.json()
+                if isinstance(j, dict) and j.get("loaded") and j.get("model"):
+                    return [str(j["model"])]
+            except Exception as e:
+                if self._status_code(e) in AUTH_CODES:
+                    raise self._auth_error(self._status_code(e)) from e
+            return []
         last_auth = None
         for p in ("/api/v1/models", "/api/v0/models"):
             try:
@@ -384,13 +506,38 @@ class LmClient:
             raise last_auth
         return []
 
+    async def list_strata_tools(self) -> dict:
+        """GET /mcp Strata: {servers: [...], tools: N} + детали при наличии.
+
+        LM Studio-путь (/v1/responses + mcp.json) здесь неприменим:
+        у Strata инструменты идут обычным OpenAI tools-блоком
+        в /v1/chat/completions. Пока серверов нет — вернётся пусто.
+        """
+        r = await self._c.get(self._root() + "/mcp", timeout=15.0,
+                              headers=self._req_headers())
+        r.raise_for_status()
+        j = r.json()
+        return j if isinstance(j, dict) else {}
+
     async def chat_stream(self, msgs, model, s: dict, on_delta: Callable,
                           on_event: Callable | None = None):
         self._cancel = False
-        if mcp_active(s):  # MCP доступен только через /v1/responses
+        # MCP через /v1/responses — только LM Studio. У Strata свой /mcp +
+        # обычные tools в chat/completions, туда не уходим даже при mcp_active.
+        if backend_from_settings(s) != "strata" and mcp_active(s):  # MCP доступен только через /v1/responses
             return await self._mcp_chat_stream(msgs, model, s, on_delta, on_event)
         payload = {"model": model, "messages": msgs, "temperature": s["temperature"],
             "max_tokens": s["max_tokens"], "stream": True}
+        if backend_from_settings(s) == "strata":
+            # Opt-in к MCP-тулам Strata (GET /mcp): без флага API-клиенты
+            # тулы сервера не видят, видит только чат-страница Strata.
+            # Тумблер — settings['strata_mcp'] (по умолчанию вкл).
+            if strata_mcp_enabled(s):
+                payload["strata_mcp"] = True
+        effort = reasoning_effort_from_settings(s)
+        if effort:
+            # Strata: none/low/medium/high (шаблон резолвит high->xhigh сам)
+            payload["reasoning_effort"] = effort
         if s.get("seed", -1) >= 0: payload["seed"] = s["seed"]
         if s.get("repeat_penalty", 1.0) != 1.0: payload["repeat_penalty"] = s["repeat_penalty"]
         content, reasoning = "", ""
@@ -409,6 +556,11 @@ class LmClient:
                         except ValueError: continue
                         if isinstance(j.get("usage"), dict):  # финальный чанк со счётчиками
                             usage = j["usage"]
+                        # Strata MCP: события лежат рядом с choices, не в delta:
+                        # {"strata_mcp": {"event": "start"|"call"|"result"|"error", ...}}
+                        sm = j.get("strata_mcp")
+                        if isinstance(sm, dict):
+                            self._strata_mcp_event(sm, on_event)
                         _choices = j.get("choices")
                         ch = _choices[0] if isinstance(_choices, list) and _choices else {}
                         delta = ch.get("delta", {}) or {}
@@ -416,6 +568,28 @@ class LmClient:
                             reasoning += delta["reasoning_content"]; on_delta("reasoning", delta["reasoning_content"])
                         if delta.get("content"):
                             content += delta["content"]; on_delta("content", delta["content"])
+                        for tc in (delta.get("tool_calls") or []):
+                            if not isinstance(tc, dict):
+                                continue
+                            fn = tc.get("function") or {}
+                            name = str(fn.get("name") or "")
+                            args = str(fn.get("arguments") or "")
+                            idx = tc.get("index", 0)
+                            key = f"tc{idx}"
+                            entry = self._tc_buf.setdefault(key, {"name": "", "args": ""})
+                            if name:
+                                entry["name"] = name
+                            entry["args"] += args
+                            if name and not entry.get("announced"):
+                                entry["announced"] = True
+                                self._notify(on_event, "tool_start", tool=name or "?",
+                                             args=self._preview(entry["args"], self._TOOL_ARGS_PREVIEW))
+                for _k, _e in list(self._tc_buf.items()):
+                    if _e.get("name") and not _e.get("done"):
+                        _e["done"] = True
+                        self._notify(on_event, "tool_done", tool=_e["name"],
+                                     output=self._preview(_e["args"], self._TOOL_PREVIEW))
+                self._tc_buf.clear()
                 break
             except StreamCancelled: raise
             except httpx.HTTPStatusError as e:
@@ -430,6 +604,37 @@ class LmClient:
                 await asyncio.sleep(1.5 * (attempt + 1))  # backoff перед ретраем
                 continue
         return content, reasoning, usage
+
+    def _strata_mcp_event(self, sm: dict, on_event) -> None:
+        """Событие strata_mcp чанка -> tool_start/tool_done/error для UI.
+
+        Формат (проверено на живом сервере с playwright):
+        start: {event, id, name} — модель решила звать тул;
+        call: {event, id, name, server, tool, arguments{...}, round} — с чем;
+        result: {event, id, ok, text, chars, truncated, ms} — что вышло;
+        error: {event, message/...} — упало.
+        """
+        ev = str(sm.get("event") or "")
+        name = str(sm.get("name") or sm.get("tool") or "?")
+        if ev in ("start", "call"):
+            args = sm.get("arguments", "")
+            if not isinstance(args, str):
+                try:
+                    args = json.dumps(args, ensure_ascii=False, separators=(",", ":"))
+                except (TypeError, ValueError):
+                    args = str(args)
+            args = self._preview(self._tool_unwrap(args), self._TOOL_ARGS_PREVIEW)
+            if self._log:
+                self._log.info("strata tool call: %s %s", name, args)
+            self._notify(on_event, "tool_start", tool=name, args=args)
+        elif ev == "result":
+            out = self._preview(str(sm.get("text") or ""), self._TOOL_PREVIEW)
+            if self._log:
+                self._log.info("strata tool %s -> %s", name, out)
+            self._notify(on_event, "tool_done", tool=name, output=out)
+        elif ev == "error":
+            msg = str(sm.get("message") or sm.get("text") or ev)
+            self._notify(on_event, "error", message=msg, kind="strata_mcp")
 
     # ---------- MCP: stateless POST /v1/responses ----------
     MCP_CHAT_PATH = "/v1/responses"

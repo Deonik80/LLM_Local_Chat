@@ -1,5 +1,5 @@
 {
-  "title": "LM Studio Chat",
+  "title": "LLM Local Chat",
   "send": "Send",
   "stop": "Stop",
   "new_chat": "New chat",
@@ -203,5 +203,13 @@
   "mcp_err_setting": "The server refused the MCP call: enable “Allow calling servers from mcp.json” in its settings. ({t})",
   "mcp_err_image": "The server rejected the request because it contains images in MCP mode (this model may not support vision): {t}",
   "mcp_no_input": "MCP mode needs a user message to send.",
-  "mcp_no_text": "The model called {n} MCP tool(s) and returned no text."
+  "mcp_no_text": "The model called {n} MCP tool(s) and returned no text.",
+  "close": "Close",
+  "mcp_strata_use": "Use Strata MCP tools",
+  "tools_catalog": "Tool catalog",
+  "tools_title": "Server tools",
+  "tools_search": "Search by name or description…",
+  "tools_refresh": "Refresh",
+  "tools_empty": "No servers connected (GET /mcp is empty). Add mcp_servers to strata-<model>.json and restart Strata.",
+  "tools_loading": "Loading…"
 }

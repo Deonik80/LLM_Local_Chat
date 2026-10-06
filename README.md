@@ -1,6 +1,6 @@
 <div align="center">
   <h1 align="center">
-LM Studio Chat
+LLM Local Chat
 </h1>
 <div align="center">
 
@@ -11,7 +11,7 @@ English | [Русский](./README.ru.md)
 </div>
 
 
-A chat client built with **Python + Flet** for interacting with local LLMs via the **LM Studio** API.
+A chat client built with **Python + Flet** for interacting with local LLMs via the **LM Studio** or **Strata** API (switchable backend).
 ---
 <picture>
   <div align="center">
@@ -35,7 +35,10 @@ A chat client built with **Python + Flet** for interacting with local LLMs via t
 *   **📦 Dependency checks:** On startup the app checks `pypdf` / `python-docx` / `openpyxl` / `pillow` and prints what is missing (no runtime auto-install — the environment is never mutated); `run_app.bat` runs `pip install -r requirements.txt`.
 *   **📊 Feedback Loop & Export:** Rate messages to create a feedback loop with log exporting in `JSONL` format for subsequent fine-tuning. Export dialogues (whole chat or ticked messages only) to `Markdown`, `HTML`, and `JSON`.
 *   **🌐 Localization & Themes:** Full support for English and Russian (all strings live in `locales/en.json` and `locales/ru.json` — a new language is just a file; voice-mode errors are translated too), featuring adaptive Dark and Light UI themes.
-*   **🧹 Clean Exit:** Automatically unloads the model from LM Studio's memory when the application closes to save GPU resources.
+*   **🧹 Clean Exit:** Automatically unloads the model from the server's memory when the application closes to save GPU resources.
+*   **🔀 Backend: LM Studio / Strata:** A **Backend** dropdown in the header (next to Model) switches the live client between LM Studio (`http://localhost:1234/v1`) and Strata (`http://127.0.0.1:8080/v1`) without restart — endpoints, model loading (`POST /load` | `/unload` on Strata) and the already-loaded model lookup adapt automatically.
+*   **🧠 Strata thinking levels:** A **Thinking** dropdown (Settings → Server access) sends `reasoning_effort: none | low | medium | high` with every Strata request.
+*   **🧰 Strata tool catalog:** Settings → MCP shows a **Use Strata MCP tools** toggle (the `strata_mcp` opt-in flag) and a **Tool catalog** button listing everything `GET /mcp` reports — servers, statuses and tools with descriptions, plus search. Tool calls stream back as compact `strata_mcp` start/call/result events rendered as chat lines, just like LM Studio MCP.
 
 ---
 
@@ -61,7 +64,7 @@ Via the `run_app.bat` batch file (automatically launches the LM Studio server an
 
 Before running the application, make sure you have:
 1.  **Python 3.9 or higher**
-2.  A running **LM Studio** server (defaults to `http://localhost:1234/v1`). Running the project via `run_app.bat` will start the LM Studio server automatically alongside the chat.
+2.  A running **LM Studio** server (defaults to `http://localhost:1234/v1`) and/or a **Strata** server (defaults to `http://127.0.0.1:8080/v1`) — pick the active one with the Backend dropdown in the header. Running the project via `run_app.bat` will start the LM Studio server automatically alongside the chat.
 
 ### Installing Dependencies
 

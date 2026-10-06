@@ -1,7 +1,7 @@
 [project]
 name = "llm-local-chat"
 version = "1.0.0"
-description = "LM Studio Chat — Flet-клиент для локальных LLM (LM Studio API)"
+description = "LLM Local Chat — Flet-клиент для локальных LLM (LM Studio / Strata API)"
 requires-python = ">=3.9"
 license = { text = "GPL-3.0-or-later" }
 dependencies = [
