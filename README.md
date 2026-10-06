@@ -10,8 +10,10 @@ English | [Русский](./README.ru.md)
 
 </div>
 
+---
 
-A chat client built with **Python + Flet** for interacting with local LLMs via the **LM Studio** or **Strata** API (switchable backend).
+LLM Local Chat is a desktop chat app built on Python and Flet for local LLMs. It features two on-the-fly switchable backends (LM Studio and Strata with thinking layers), streaming, clipboard images, voice input/voiceover, MCP tools with a catalog, chat folders and pins, presets and profiles, history compression, all-chat search, export to MD/HTML/JSON, RU/EN, and dark/light themes. Everything is stored locally.
+
 ---
 <picture>
   <div align="center">
