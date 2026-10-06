@@ -17,7 +17,7 @@ LLM Local Chat is a desktop chat app built on Python and Flet for local LLMs. It
 ---
 <picture>
   <div align="center">
-<img width="800" height="771" alt="1" src="https://github.com/user-attachments/assets/5b6f49d7-0c70-454c-9643-48bd3113d542" />
+<img width="800" height="900" alt="1" src="https://github.com/Deonik80/LLM_Local_Chat/blob/main/Screenshots/1.png" />
     </div>
 </picture>
 
@@ -53,9 +53,9 @@ LLM Local Chat is a desktop chat app built on Python and Flet for local LLMs. It
 *   **Code Quality:** `pytest` + `ruff` + `mypy` + `pytest-cov` (coverage gate in CI), `tests/`, `pyproject.toml`, GitHub Actions CI (Python 3.9–3.13)
 
 ---
-<img width="800" height="771" alt="2" src="https://github.com/user-attachments/assets/04dc902d-fd87-4775-8ab1-872839137336" />
-<img width="800" height="771" alt="3" src="https://github.com/user-attachments/assets/b2968e48-ddc5-4987-9221-6129984ee63d" />
-<img width="800" height="771" alt="4" src="https://github.com/user-attachments/assets/71555ac3-05fd-464c-9532-fa66c9ed578a" />
+<img width="800" height="900" alt="2" src="https://github.com/Deonik80/LLM_Local_Chat/blob/main/Screenshots/2.png" />
+<img width="800" height="900" alt="3" src="https://github.com/Deonik80/LLM_Local_Chat/blob/main/Screenshots/3.png" />
+<img width="800" height="900" alt="4" src="https://github.com/Deonik80/LLM_Local_Chat/blob/main/Screenshots/4.png" />
 ---
 
 ## 🚀 Quick Start

@@ -971,12 +971,23 @@ async def main(page: ft.Page):
             show_e(str(ex)); return
         await load_models()
 
+    def _remember_loaded(be: str, model: str):
+        """Запомнить загруженную модель отдельно для каждого бэкенда."""
+        try:
+            settings[f"loaded_model_{be}"] = model
+            save_settings(settings)
+        except Exception as ex:
+            _log.warning("remember loaded failed: %s", ex)
+
     async def load_models(e=None):
         try: models = await client.fetch_models()
         except RuntimeError as ex: _log.warning("fetch_models failed: %s", ex); show_e(str(ex)); set_conn(False); return
         if not models: models = [DEFAULT_MODEL]
         model_dd.options = [ft.DropdownOption(k, k) for k in models]
-        saved = settings.get("model") or ""
+        _be = backend_from_settings(settings)
+        # предпочтение — модели этого бэкенда (запомнили при прошлом визите),
+        # иначе общая последняя выбранная
+        saved = settings.get(f"loaded_model_{_be}") or settings.get("model") or ""
         # NEW: сервер уже держит модель в памяти? — используем её, вторую не грузим.
         # loaded_models() смотрит только эндпоинты с явным loaded-state
         # (GET /api/v1/models -> loaded_instances), каталог не в счёт.
@@ -1003,6 +1014,7 @@ async def main(page: ft.Page):
             state["models_n"] = len(models)
             state["loaded_model"] = pick
             state["model_touched"] = True
+            _remember_loaded(backend_from_settings(settings), pick)
             persist()  # запомнить подхваченную модель как текущую
             set_conn(True, tr("models_n", n=len(models))); page.update()
             _log.info("adopted already-loaded model on server: %s (server holds: %s)", pick, already)
@@ -1038,6 +1050,9 @@ async def main(page: ft.Page):
             show_e(tr("e_load_model", m=sel, e=ex))
             return
         state["loaded_model"] = sel
+        state["model_touched"] = True
+        _remember_loaded(backend_from_settings(settings), sel)
+        persist()  # сразу запомнить выбор (и для этого бэкенда отдельно)
         await _sync_ctx_max(sel, load_info)
         try:
             if store is not None: store._emit("model:loaded")
@@ -2047,7 +2062,9 @@ async def main(page: ft.Page):
     effort_dd.visible = _be == "strata"
 
     def _save_backend(e=None):
+        prev_be = backend_from_settings(settings)
         be = backend_dd.value if backend_dd.value in BACKENDS else "lmstudio"
+        prev_model = state.get("loaded_model")
         settings["backend"] = be
         settings["strata_url"] = (backend_url_f.value or "").strip() or "http://127.0.0.1:8080/v1"
         settings["reasoning_effort"] = effort_dd.value or ""
@@ -2057,12 +2074,6 @@ async def main(page: ft.Page):
         _log.info("backend=%s strata_url=%s effort=%s", be,
                   settings["strata_url"], settings["reasoning_effort"] or "-")
         try:
-            # живой клиент создан при старте под старый бэкенд — переткнуть URL,
-            # иначе load_models() и чат продолжат бить в LM Studio
-            client.set_base_url(base_url_from_settings(settings))
-        except Exception as ex:
-            _log.warning("client re-point failed: %s", ex)
-        try:
             # шапка и MCP-секция зависят от бэкенда: thinking/URL/тумблеры
             _refresh_mcp_visibility()
         except Exception:
@@ -2071,10 +2082,53 @@ async def main(page: ft.Page):
             page.update()
         except Exception:
             pass
+        if be != prev_be:
+            # смена сервера: выгрузить модель на старом (освободить VRAM/RAM),
+            # переткнуть клиент и поднять запомненную модель нового
+            try:
+                asyncio.get_running_loop().create_task(
+                    _switch_backend(prev_be, be, prev_model))
+            except Exception as ex:
+                _log.warning("backend switch not started: %s", ex)
+        else:
+            try:
+                client.set_base_url(base_url_from_settings(settings))
+                asyncio.get_running_loop().create_task(load_models())
+            except Exception as ex:
+                _log.warning("backend recheck not started: %s", ex)
+
+    async def _switch_backend(old_be: str, new_be: str, old_model: str | None):
+        """Переход между серверами с выгрузкой/загрузкой моделей.
+
+        Важно: выгрузка идёт через клиент, ещё смотрящий на СТАРЫЙ сервер,
+        и только потом перетыкаем URL. Всё best effort: сервер мог уже
+        лежать — тогда просто идём дальше к новому.
+        """
+        if old_model:
+            try:
+                status.value = tr("model_unloading", m=old_model)
+                page.update()
+            except Exception:
+                pass
+            try:
+                await client.unload_model(old_model, old_be)
+                _log.info("unloaded %s on %s before backend switch", old_model, old_be)
+            except Exception as ex:
+                _log.warning("unload on backend switch failed (%s/%s): %s", old_be, old_model, ex)
+            state["loaded_model"] = None
         try:
-            asyncio.get_running_loop().create_task(load_models())
+            # живой клиент создан при старте под старый бэкенд — переткнуть URL,
+            # иначе load_models() и чат продолжат бить в прежний сервер
+            client.set_base_url(base_url_from_settings(settings))
         except Exception as ex:
-            _log.warning("backend recheck not started: %s", ex)
+            _log.warning("client re-point failed: %s", ex)
+        try:
+            _refresh_mcp_visibility()
+        except Exception:
+            pass
+        # load_models подхватит уже загруженное на новом сервере, иначе
+        # поднимет запомненную именно для него модель (loaded_model_<backend>)
+        await load_models()
 
     backend_dd.on_select = _save_backend
     backend_url_f.on_blur = _save_backend
